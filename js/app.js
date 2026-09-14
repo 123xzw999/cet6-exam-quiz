@@ -282,29 +282,62 @@
     return p.nos.slice();
   }
 
-  /* ---------------- 分区（左侧原文用） ---------------- */
-  function examSections(p, nos) {
-    var secs = [];
-    function add(key, title, sel) {
-      var list = nos.filter(sel);
-      if (!list.length) return;
-      secs.push({ key: key, title: title, nos: list, passage: "" });
-    }
-    add("listening", "Part II 听力理解", function (n) { return n <= 25; });
-    add("cloze", "Part III Section A 选词填空", function (n) { return n >= 26 && n <= 35; });
-    add("matching", "Part III Section B 长篇阅读", function (n) { return n >= 36 && n <= 45; });
-    add("reading1", "Part III Section C 仔细阅读（一）", function (n) { return n >= 46 && n <= 50; });
-    add("reading2", "Part III Section C 仔细阅读（二）", function (n) { return n >= 51 && n <= 55; });
-    secs.forEach(function (s) {
-      var q = p.questions.filter(function (x) { return s.nos.indexOf(x.no) >= 0; })[0];
-      if (!q) return;
-      s.passage = q.passage || (p.passages && q.pref && p.passages[q.pref]) || "";
+  /* ---------------- 试卷结构（Part / Section） ---------------- */
+  var DIRECTIONS = {
+    LA: "In this section, you will hear two long conversations. At the end of each conversation, you will hear four questions. Both the conversation and the questions will be spoken only once. After you hear a question, you must choose the best answer from the four choices marked A), B), C) and D).",
+    LB: "In this section, you will hear two passages. At the end of each passage, you will hear three or four questions. Both the passage and the questions will be spoken only once.",
+    LC: "In this section, you will hear three recordings of lectures or talks followed by three or four questions. The recordings will be played only once.",
+    RA: "In this section, there is a passage with ten blanks. You are required to select one word for each blank from a list of choices given in a word bank following the passage. Read the passage through carefully before making your choices. Each choice in the bank is identified by a letter.",
+    RB: "In this section, you are going to read a passage with ten statements attached to it. Each statement contains information given in one of the paragraphs. Identify the paragraph from which the information is derived. You may choose a paragraph more than once.",
+    RC: "There are 2 passages in this section. Each passage is followed by some questions or unfinished statements. For each of them there are four choices marked A), B), C) and D). You should decide on the best choice."
+  };
+  /* CET-6 固定题号分布：听力 A 1-8 / B 9-15 / C 16-25；阅读 A 26-35 / B 36-45 / C 46-55 */
+  var STRUCT = [
+    { part: "II", en: "Listening Comprehension", zh: "听力理解", from: 1, to: 25,
+      secs: [
+        { key: "LA", letter: "A", zh: "长对话", dir: DIRECTIONS.LA, from: 1, to: 8 },
+        { key: "LB", letter: "B", zh: "短文理解", dir: DIRECTIONS.LB, from: 9, to: 15 },
+        { key: "LC", letter: "C", zh: "讲座 / 讲话", dir: DIRECTIONS.LC, from: 16, to: 25 }
+      ] },
+    { part: "III", en: "Reading Comprehension", zh: "阅读理解", from: 26, to: 55,
+      secs: [
+        { key: "RA", letter: "A", zh: "选词填空", dir: DIRECTIONS.RA, from: 26, to: 35 },
+        { key: "RB", letter: "B", zh: "长篇阅读（信息匹配）", dir: DIRECTIONS.RB, from: 36, to: 45 },
+        { key: "RC1", letter: "C", tag: "(1)", zh: "仔细阅读 · 第一篇", dir: DIRECTIONS.RC, from: 46, to: 50 },
+        { key: "RC2", letter: "C", tag: "(2)", zh: "仔细阅读 · 第二篇", dir: DIRECTIONS.RC, from: 51, to: 55 }
+      ] }
+  ];
+
+  /* 按当前模式过滤出实际要考的 Part/Section */
+  function examStructure(p, nos) {
+    var set = {};
+    nos.forEach(function (n) { set[n] = 1; });
+    var out = [];
+    STRUCT.forEach(function (part) {
+      var secs = [];
+      part.secs.forEach(function (sc) {
+        var list = nos.filter(function (n) { return n >= sc.from && n <= sc.to; });
+        if (!list.length) return;
+        var q = p.questions.filter(function (x) { return list.indexOf(x.no) >= 0; })[0];
+        secs.push({
+          key: sc.key, letter: sc.letter, tag: sc.tag || "", zh: sc.zh, dir: sc.dir,
+          nos: list, part: part.part, partEn: part.en, partZh: part.zh,
+          passage: q ? (q.passage || (p.passages && q.pref && p.passages[q.pref]) || "") : ""
+        });
+      });
+      if (secs.length) out.push({ part: part.part, en: part.en, zh: part.zh, secs: secs });
     });
-    return secs;
+    return out;
   }
-  function sectionOf(secs, no) {
-    for (var i = 0; i < secs.length; i++) if (secs[i].nos.indexOf(no) >= 0) return secs[i].key;
-    return secs.length ? secs[0].key : null;
+  function flatSections(struct) {
+    var out = [];
+    struct.forEach(function (p) { p.secs.forEach(function (s) { out.push(s); }); });
+    return out;
+  }
+  function sectionByNo(struct, no) {
+    var all = flatSections(struct);
+    for (var i = 0; i < all.length; i++) if (all[i].nos.indexOf(no) >= 0) return all[i];
+    return all[0] || null;
   }
 
   /* ================================================================
@@ -312,79 +345,126 @@
      ================================================================ */
   function renderExam() {
     var p = paperOf(S.pid), m = meta(S.pid);
-    var nos = modeNos(m, S.mode);   // 题号来自索引条目，套卷数据里没有 nos
-    var secs = examSections(p, nos);
+    var nos = modeNos(m, S.mode);
     S.queue = nos.map(function (n) { return { pid: S.pid, no: n }; });
-    S.secKey = sectionOf(secs, nos[0]);
+    var struct = examStructure(p, nos);
+    S.struct = struct;
+    var all = flatSections(struct);
+    S.secKey = all.length ? all[0].key : null;
     S.view = "exam";
     setNav(null);
 
     var modeName = { full: "整卷考试", listening: "听力部分", reading: "阅读部分" }[S.mode];
     var hasAudio = !!AUDIO[S.pid] && nos.indexOf(1) >= 0;
-    var withPassage = secs.some(function (s) { return s.passage; });
+    var hasPassage = all.some(function (x) { return x.passage; });
+    var withPanel = hasPassage || hasAudio;
 
     var h = '<div class="exam">';
     h += '<div class="exam-head">' +
       '<button class="back" id="backHome">←</button>' +
-      '<div class="etitle">' + esc(m.label) + " " + esc(m.set) + '<small>' + modeName + ' · ' + nos.length + ' 题</small></div>' +
-      '<div class="egrow"><div class="einfo"><span id="examProgress"></span><span class="timer" id="examTimer">00:00</span></div>' +
+      '<div class="etitle">' + esc(m.label) + " " + esc(m.set) +
+      '<small>' + modeName + ' · ' + nos.length + ' 题</small></div>' +
+      '<div class="egrow"><div class="einfo"><span id="examProgress"></span>' +
+      '<span class="timer" id="examTimer">00:00</span></div>' +
       '<div class="pbar2"><i id="examBar" style="width:0%"></i></div></div>' +
       '<div class="eact"><button class="btn sm ghost" id="sheetBtn">答题卡</button>' +
-      '<button class="btn sm primary" id="submitBtn">提交试卷</button></div>' +
-      '</div>';
+      '<button class="btn sm primary" id="submitBtn">提交试卷</button></div></div>';
 
-    h += '<div class="exam-body' + (withPassage ? " split" : "") + '">';
-
-    /* 左栏：原文 */
-    if (withPassage) {
-      h += '<aside class="passage" id="passageBox"><div class="passage-head" id="passageHead">' +
-        '<b id="passageTitle"></b><span id="passageToggle">点击折叠 ▲</span></div>' +
+    h += '<div class="exam-body' + (withPanel ? " split" : "") + '">';
+    if (withPanel) {
+      h += '<aside class="passage" id="passageBox">' +
+        '<div class="sec-tabs" id="secTabs">' +
+        all.map(function (x) {
+          return '<button data-key="' + x.key + '">Section ' + x.letter + (x.tag ? " " + x.tag : "") + '</button>';
+        }).join("") +
+        '</div>' +
+        '<div id="panelAudio"></div>' +
+        '<div class="passage-head" id="passageHead"><b id="passageTitle"></b>' +
+        '<span id="passageToggle">点击折叠 ▲</span></div>' +
         '<div class="passage-body" id="passageBody"></div></aside>';
     }
-
-    /* 右栏 */
-    h += '<div>';
-    if (hasAudio) h += audioBox(S.pid);
-    h += '<div class="qlist" id="qlist"></div>';
+    h += '<div class="qflow" id="qflow"></div>';
     h += '<div id="scoreBox"></div>';
-    h += '</div></div></div>';
-
+    h += '</div></div>';
     view.innerHTML = h;
 
     $("backHome").onclick = function () { renderHome(); };
     $("sheetBtn").onclick = openSheet;
     $("submitBtn").onclick = submitExam;
     if ($("passageHead")) $("passageHead").onclick = function () {
-      var b = $("passageBox"); b.classList.toggle("collapsed");
-      $("passageToggle").textContent = b.classList.contains("collapsed") ? "点击展开 ▼" : "点击折叠 ▲";
+      var bx = $("passageBox"); bx.classList.toggle("collapsed");
+      $("passageToggle").textContent = bx.classList.contains("collapsed") ? "点击展开 ▼" : "点击折叠 ▲";
     };
-    $("qlist").addEventListener("click", onQListClick);
-    if (hasAudio) bindAudio(S.pid);
+    if ($("secTabs")) $("secTabs").onclick = function (e) {
+      var btn = e.target.closest("button[data-key]");
+      if (!btn) return;
+      var el = document.getElementById("sec-" + btn.dataset.key);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    $("qflow").addEventListener("click", onQListClick);
 
-    renderQList(secs);
+    renderQFlow(struct, hasAudio);
+    /* 音频优先放左栏；没有左栏（纯听力模式）时放到题目流最前面 */
+    if (hasAudio) {
+      var abHTML = audioBox(S.pid);
+      if ($("panelAudio")) $("panelAudio").innerHTML = abHTML;
+      else $("qflow").insertAdjacentHTML("afterbegin", abHTML);
+    }
+    if (hasAudio) bindAudio(S.pid);
     showSection(S.secKey);
+    bindScrollSpy();
     updateExamProgress();
     startTimer();
   }
 
+  /* 连续排布整卷：Part 标题 + Section 标题 + Directions + 题目 */
+  function renderQFlow(struct, hasAudio) {
+    var p = paperOf(S.pid), h = "";
+    struct.forEach(function (part) {
+      h += '<h2 class="part-h"><span class="part-no">Part ' + part.part + '</span>' +
+        '<span class="part-en">' + esc(part.en) + '</span>' +
+        '<span class="part-zh">' + esc(part.zh) + '</span></h2>';
+      part.secs.forEach(function (sec) {
+        h += '<h3 class="sec-h" id="sec-' + sec.key + '" data-key="' + sec.key + '">' +
+          '<span class="sec-no">Section ' + sec.letter + (sec.tag ? " " + sec.tag : "") + '</span>' +
+          '<span class="sec-zh">' + esc(sec.zh) + '</span>' +
+          '<span class="sec-range">第 ' + sec.nos[0] + "–" + sec.nos[sec.nos.length - 1] + ' 题</span></h3>';
+        h += '<p class="sec-dir"><b>Directions:</b> ' + esc(sec.dir) + '</p>';
+        sec.nos.forEach(function (no) {
+          var q = findQ(p, no);
+          if (q) h += qItemHTML(q);
+        });
+      });
+    });
+    $("qflow").innerHTML = h;
+  }
+
+  function findQ(p, no) {
+    for (var i = 0; i < p.questions.length; i++) if (p.questions[i].no === no) return p.questions[i];
+    return null;
+  }
+
+  /* ---------------- 听力播放器 ---------------- */
   function audioBox(pid) {
     var a = AUDIO[pid];
+    if (!a) return "";
     return '<div class="audio-box"><div class="atitle">🎧 听力原声' +
       '<span class="live">链接已验证可用</span></div>' +
       '<audio id="audioEl" controls preload="none"></audio>' +
       '<div class="seg-list" id="segList">' +
-      a.pieces.map(function (s, i) {
-        return '<button data-seek="' + s.start + '" title="' + esc(s.label) + '">' +
-          esc(s.label.replace(/·.*/, "").trim()) + " " + fmtTime(s.start) + '</button>';
+      a.pieces.map(function (x) {
+        return '<button data-seek="' + x.start + '" title="' + esc(x.label) + '">' +
+          esc(x.label.replace(/·.*/, "").trim()) + " " + fmtTime(x.start) + '</button>';
       }).join("") +
       '</div>' +
-      '<div class="audio-fallback">若浏览器无法播放（HLS 流），可' +
+      '<div class="audio-fallback">若播放器不可用，可' +
       '<a href="https://english-exam.lazynote.cn/cet6/paper/' + pid + '/?f=p" target="_blank" rel="noopener">在来源页收听 ↗</a></div></div>';
   }
   function fmtTime(t) {
     t = Math.floor(t);
     return ("0" + Math.floor(t / 60)).slice(-2) + ":" + ("0" + (t % 60)).slice(-2);
   }
+
   /* hls.js 按需加载：多 CDN 依次兜底，加载失败也不影响页面其它功能 */
   var HLS_URLS = [
     "https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js",
@@ -418,14 +498,12 @@
   function bindAudio(pid) {
     var el = $("audioEl"), a = AUDIO[pid];
     if (!el || !a) return;
-    /* 分段跳转按钮不依赖播放组件，先挂上 */
     $("segList").onclick = function (e) {
       var b = e.target.closest("button[data-seek]");
       if (!b) return;
       try { el.currentTime = parseFloat(b.dataset.seek); el.play(); } catch (err) {}
       this.querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x === b); });
     };
-    /* Safari 原生支持 HLS，直接给 src */
     if (el.canPlayType("application/vnd.apple.mpegurl")) { el.src = a.src; return; }
     var hint = document.createElement("div");
     hint.className = "audio-fallback";
@@ -443,16 +521,8 @@
     });
   }
 
-  /* ---------------- 题目渲染 ---------------- */
-  function renderQList(secs) {
-    var p = paperOf(S.pid);
-    var h = "";
-    p.questions.filter(function (q) { return S.queue.some(function (x) { return x.no === q.no; }); })
-      .forEach(function (q) { h += qItemHTML(q, secs); });
-    $("qlist").innerHTML = h;
-  }
-
-  function qItemHTML(q, secs) {
+  /* ---------------- 题目卡片 ---------------- */
+  function qItemHTML(q) {
     var qid = qidOf(S.pid, q.no);
     var rec = Store.getAnswer(qid);
     var cls = "qitem";
@@ -466,7 +536,6 @@
         : '<span class="mark bad" style="background:#f3f4f7;color:#6b7280">未作答</span>';
     }
     h += '</div>';
-
     if (q.stem) h += '<p class="qstem">' + esc(q.stem) + '</p>';
     if (q.stemZh) h += '<p class="qstem-zh">' + esc(q.stemZh) + '</p>';
 
@@ -492,40 +561,47 @@
     return h;
   }
 
+  /* ---------------- 原文渲染 ---------------- */
+  function passageHTML(t, key) {
+    if (!t) return '<p class="panel-hint">本部分没有原文。</p>';
+    var k = key || "";
+    if (k === "cloze" || k === "RA") {
+      return "<p>" + esc(t).replace(/\((\d{2})\)_{3,}\s*/g, '<span class="blank">($1) ______</span> ') + "</p>";
+    }
+    if (k === "matching" || k === "RB") {
+      return t.split(/\n(?=[A-M]\)\s)/).map(function (x) {
+        return "<p>" + esc(x.trim()).replace(/^([A-M])\)/, "<b>$1)</b>") + "</p>";
+      }).join("");
+    }
+    return t.split(/\n{2,}/).map(function (x) {
+      return "<p>" + esc(x.trim()).replace(/^(P\d+)\s/, "<b>$1</b> ") + "</p>";
+    }).join("");
+  }
+
+  /* ---------------- 答题交互 ---------------- */
   function onQListClick(e) {
     var b = e.target.closest("button[data-k]");
     if (!b) return;
     var no = parseInt(b.dataset.no, 10);
-    var qid = qidOf(S.pid, no);
-    if (Store.getAnswer(qid) && S.submitted) return;
-    if (Store.getAnswer(qid) && !S.submitted) {
-      // 考试模式下允许改答案
-    }
+    if (S.submitted) return;                       // 交卷后不再改答案
     pickAnswer(no, b.dataset.k);
   }
 
   function pickAnswer(no, k) {
-    var p = paperOf(S.pid);
-    var q = null;
-    for (var i = 0; i < p.questions.length; i++) if (p.questions[i].no === no) q = p.questions[i];
+    var p = paperOf(S.pid), q = findQ(p, no);
     if (!q) return;
     var ok = (k === q.answer);
     Store.answer(qidOf(S.pid, no), k, ok);
     paintQuestion(no);
     updateExamProgress();
     refreshBadges();
-    if (S.submitted) { toast(ok ? "答对了 ✓" : "答错了"); }
   }
 
   function paintQuestion(no) {
-    var p = paperOf(S.pid);
-    var q = null;
-    for (var i = 0; i < p.questions.length; i++) if (p.questions[i].no === no) q = p.questions[i];
+    var p = paperOf(S.pid), q = findQ(p, no);
     if (!q) return;
-    var qid = qidOf(S.pid, no);
-    var rec = Store.getAnswer(qid);
-    var nodes = document.querySelectorAll('#q-' + no + ' button[data-k]');
-    nodes.forEach(function (n) {
+    var rec = Store.getAnswer(qidOf(S.pid, no));
+    document.querySelectorAll('#q-' + no + ' button[data-k]').forEach(function (n) {
       n.classList.remove("right", "wrong", "picked");
       var k = n.dataset.k;
       if (S.submitted || S.revealed) {
@@ -537,9 +613,7 @@
       }
     });
     var box = $("res-" + no);
-    if (!box) return;
-    if (!S.submitted && !S.revealed) { box.innerHTML = ""; return; }
-    box.innerHTML = resultHTML(q, rec);
+    if (box) box.innerHTML = (S.submitted || S.revealed) ? resultHTML(q, rec) : "";
     var item = $("q-" + no);
     if (item) {
       item.classList.remove("right", "wrong");
@@ -574,30 +648,58 @@
     return h;
   }
 
-  /* ---------------- 左栏原文 ---------------- */
+  /* ---------------- 左栏：跟随滚动切换原文 ---------------- */
   function showSection(key) {
-    var p = paperOf(S.pid);
-    var secs = examSections(p, S.queue.map(function (x) { return x.no; }));
-    var sec = null;
-    secs.forEach(function (s) { if (s.key === key) sec = s; });
-    if (!sec || !$("passageBody")) return;
-    S.secKey = key;
-    $("passageTitle").textContent = sec.title;
-    $("passageBody").innerHTML = passageHTML(sec.passage, sec.key);
+    if (!S.struct) return;
+    var all = flatSections(S.struct), sec = null;
+    all.forEach(function (x) { if (x.key === key) sec = x; });
+    if (!sec) sec = all[0];
+    if (!sec) return;
+    S.secKey = sec.key;
+    if ($("secTabs")) {
+      $("secTabs").querySelectorAll("button").forEach(function (b) {
+        b.classList.toggle("on", b.dataset.key === sec.key);
+      });
+    }
+    var pa = $("panelAudio"), ph = $("passageHead"), pb = $("passageBody");
+    if (!pb) return;
+    var isListen = sec.key.charAt(0) === "L";
+    if (pa) pa.style.display = isListen ? "" : "none";
+    if (ph) ph.style.display = (isListen || !sec.passage) ? "none" : "";
+    if (isListen) {
+      pb.innerHTML = '<p class="panel-hint">🎧 本部分是听力题，录音见上方播放器。' +
+        '题干与选项已印在卷面上，播放时可对照作答。</p>';
+      return;
+    }
+    if (sec.passage) {
+      $("passageTitle").textContent = "Section " + sec.letter + (sec.tag ? " " + sec.tag : "") + " · " + sec.zh;
+      pb.innerHTML = passageHTML(sec.passage, sec.key);
+    } else {
+      pb.innerHTML = '<p class="panel-hint">本部分没有原文。</p>';
+    }
   }
-  function passageHTML(t, key) {
-    if (!t) return '<p style="color:#b6a7ae">本部分没有原文（听力录音内容见解析）</p>';
-    if (key === "cloze") {
-      return "<p>" + esc(t).replace(/\((\d{2})\)_{3,}\s*/g, '<span class="blank">($1) ______</span> ') + "</p>";
-    }
-    if (key === "matching") {
-      return t.split(/\n(?=[A-M]\)\s)/).map(function (x) {
-        return "<p>" + esc(x.trim()).replace(/^([A-M])\)/, "<b>$1)</b>") + "</p>";
-      }).join("");
-    }
-    return t.split(/\n{2,}/).map(function (x) {
-      return "<p>" + esc(x.trim()).replace(/^(P\d+)\s/, "<b>$1</b> ") + "</p>";
-    }).join("");
+
+  var spyHandler = null;
+  function bindScrollSpy() {
+    if (spyHandler) window.removeEventListener("scroll", spyHandler);
+    var heads = [].slice.call(document.querySelectorAll(".sec-h"));
+    if (!heads.length) { spyHandler = null; return; }
+    var ticking = false;
+    spyHandler = function () {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(function () {
+        ticking = false;
+        var best = heads[0], bestTop = -1e9;
+        heads.forEach(function (h) {
+          var t = h.getBoundingClientRect().top;
+          if (t <= 190 && t > bestTop) { bestTop = t; best = h; }
+        });
+        if (best.dataset.key && best.dataset.key !== S.secKey) showSection(best.dataset.key);
+      });
+    };
+    window.addEventListener("scroll", spyHandler, { passive: true });
+    spyHandler();
   }
 
   function updateExamProgress() {
@@ -645,10 +747,10 @@
       else { wrong++; byPart[key].w++; }
     });
 
-    // 重绘题目（带对错与解析）
-    var secs = examSections(p, S.queue.map(function (x) { return x.no; }));
-    renderQList(secs);
+    // 重绘整卷（带对错与解析）
+    renderQFlow(S.struct, !!AUDIO[S.pid] && S.queue.some(function (x) { return x.no === 1; }));
     S.queue.forEach(function (x) { paintQuestion(x.no); });   // 每题重新着色并展开解析
+    showSection(S.secKey);
 
     var total = S.queue.length;
     var rate = Math.round(right / total * 100);
@@ -1006,7 +1108,8 @@
       } else {
         var el = $("q-" + no);
         if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-        showSection(sectionOf(examSections(paperOf(S.pid), S.queue.map(function (x) { return x.no; })), no));
+        var sc = sectionByNo(S.struct, no);
+        if (sc) showSection(sc.key);
       }
     };
     $("sheetClose2").onclick = closeSheet;
