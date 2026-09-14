@@ -95,7 +95,7 @@
 
   function initLogin() {
     $("loginUser").value = ACCOUNT.user;     // 打开即显示用户名
-    $("loginPass").value = ACCOUNT.pass;     // 直接点「立即登录」即可进入
+    $("loginPass").value = "";               // 密码留空，由用户输入
     $("loginForm").addEventListener("submit", function (e) {
       e.preventDefault();
       var u = $("loginUser").value.trim();
@@ -111,22 +111,33 @@
       }
     });
     if (isLogged()) enterApp();
+    else setTimeout(function () { $("loginPass").focus(); }, 60);
   }
 
   function enterApp() {
     $("login").hidden = true;
     $("app").hidden = false;
-    refreshBadges();
-    renderHome();
+    document.body.classList.remove("logged-out");
+    try {
+      refreshBadges();
+      renderHome();
+    } catch (err) {
+      $("view").innerHTML = '<div class="empty"><div class="ei">⚠️</div>' +
+        '<p>页面初始化出错</p><p style="font-size:12.5px;color:#b6a7ae;margin-top:6px">' +
+        esc(err.message) + "</p></div>";
+      console.error(err);
+    }
   }
 
   function logout() {
     setLogged(false);
+    document.body.classList.add("logged-out");
     $("app").hidden = true;
     $("login").hidden = false;
     $("loginErr").hidden = true;
     $("loginUser").value = ACCOUNT.user;
-    $("loginPass").value = ACCOUNT.pass;
+    $("loginPass").value = "";
+    setTimeout(function () { $("loginPass").focus(); }, 60);
   }
 
   /* ================================================================
@@ -374,30 +385,62 @@
     t = Math.floor(t);
     return ("0" + Math.floor(t / 60)).slice(-2) + ":" + ("0" + (t % 60)).slice(-2);
   }
+  /* hls.js 按需加载：多 CDN 依次兜底，加载失败也不影响页面其它功能 */
+  var HLS_URLS = [
+    "https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js",
+    "https://unpkg.com/hls.js@1.5.17/dist/hls.min.js",
+    "https://cdn.bootcdn.net/ajax/libs/hls.js/1.5.17/hls.min.js",
+    "https://lib.baomitu.com/hls.js/1.5.17/hls.min.js"
+  ];
+  var hlsWaiters = null;
+  function ensureHls(cb) {
+    if (window.Hls && window.Hls.isSupported && window.Hls.isSupported()) return cb(true);
+    if (hlsWaiters) { hlsWaiters.push(cb); return; }
+    hlsWaiters = [cb];
+    var i = 0, settled = false;
+    function finish(ok) {
+      if (settled) return;
+      settled = true;
+      var list = hlsWaiters; hlsWaiters = null;
+      list.forEach(function (f) { try { f(ok); } catch (e) {} });
+    }
+    (function next() {
+      if (i >= HLS_URLS.length) return finish(false);
+      var sc = document.createElement("script");
+      sc.src = HLS_URLS[i++];
+      sc.onload = function () { window.Hls ? finish(true) : next(); };
+      sc.onerror = function () { next(); };
+      document.head.appendChild(sc);
+    })();
+    setTimeout(function () { finish(!!window.Hls); }, 12000);
+  }
+
   function bindAudio(pid) {
     var el = $("audioEl"), a = AUDIO[pid];
-    if (!el) return;
-    var ok = false;
-    if (window.Hls && window.Hls.isSupported()) {
-      var hls = new window.Hls({ lowLatencyMode: false });
-      hls.loadSource(a.src);
-      hls.attachMedia(el);
-      ok = true;
-    } else if (el.canPlayType("application/vnd.apple.mpegurl")) {
-      el.src = a.src; ok = true;
-    }
-    if (!ok) {
-      $("segList").innerHTML = '<span style="font-size:12.5px;color:#b3262b">' +
-        '当前浏览器不支持 HLS 播放，请点上面的来源页链接收听</span>';
-      return;
-    }
+    if (!el || !a) return;
+    /* 分段跳转按钮不依赖播放组件，先挂上 */
     $("segList").onclick = function (e) {
       var b = e.target.closest("button[data-seek]");
       if (!b) return;
-      el.currentTime = parseFloat(b.dataset.seek);
-      el.play();
+      try { el.currentTime = parseFloat(b.dataset.seek); el.play(); } catch (err) {}
       this.querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x === b); });
     };
+    /* Safari 原生支持 HLS，直接给 src */
+    if (el.canPlayType("application/vnd.apple.mpegurl")) { el.src = a.src; return; }
+    var hint = document.createElement("div");
+    hint.className = "audio-fallback";
+    hint.textContent = "正在加载播放组件…";
+    $("segList").parentNode.insertBefore(hint, $("segList"));
+    ensureHls(function (ok) {
+      if (ok && window.Hls.isSupported()) {
+        hint.remove();
+        var hls = new window.Hls({ lowLatencyMode: false });
+        hls.loadSource(a.src);
+        hls.attachMedia(el);
+      } else {
+        hint.innerHTML = '⚠️ 播放组件加载失败（可能网络受限），请点下方来源页链接收听';
+      }
+    });
   }
 
   /* ---------------- 题目渲染 ---------------- */
@@ -1018,6 +1061,14 @@
       var L = e.key.toUpperCase();
       var btn = document.querySelector('.qcard button[data-k="' + L + '"]');
       if (btn && !Store.getAnswer(qidOf(S.curPid, S.cur.no))) btn.click();
+    }
+  });
+
+  window.addEventListener("error", function (ev) {
+    if (!ev || !ev.message) return;
+    if (document.body.classList.contains("logged-out")) {
+      var e = $("loginErr");
+      if (e) { e.hidden = false; e.textContent = "脚本错误：" + ev.message; }
     }
   });
 

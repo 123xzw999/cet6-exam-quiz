@@ -13,6 +13,9 @@
   --serif:"Iowan Old Style","Palatino Linotype",Georgia,"Times New Roman",serif;
 }
 *{box-sizing:border-box}
+/* 关键：作者样式里的 display 会盖掉 [hidden] 的 display:none，
+   导致 login / sheet / inkTools 这类元素 hidden 后依然可见，必须强制 */
+[hidden]{display:none !important}
 html,body{margin:0;padding:0}
 body{
   font-family:var(--font);font-size:15px;line-height:1.62;color:var(--ink);
