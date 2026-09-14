@@ -356,8 +356,6 @@
 
     var modeName = { full: "整卷考试", listening: "听力部分", reading: "阅读部分" }[S.mode];
     var hasAudio = !!AUDIO[S.pid] && nos.indexOf(1) >= 0;
-    var hasPassage = all.some(function (x) { return x.passage; });
-    var withPanel = hasPassage || hasAudio;
 
     var h = '<div class="exam">';
     h += '<div class="exam-head">' +
@@ -370,66 +368,44 @@
       '<div class="eact"><button class="btn sm ghost" id="sheetBtn">答题卡</button>' +
       '<button class="btn sm primary" id="submitBtn">提交试卷</button></div></div>';
 
-    h += '<div class="exam-body' + (withPanel ? " split" : "") + '">';
-    if (withPanel) {
-      h += '<aside class="passage" id="passageBox">' +
-        '<div class="sec-tabs" id="secTabs">' +
-        all.map(function (x) {
-          return '<button data-key="' + x.key + '">Section ' + x.letter + (x.tag ? " " + x.tag : "") + '</button>';
-        }).join("") +
-        '</div>' +
-        '<div id="panelAudio"></div>' +
-        '<div class="passage-head" id="passageHead"><b id="passageTitle"></b>' +
-        '<span id="passageToggle">点击折叠 ▲</span></div>' +
-        '<div class="passage-body" id="passageBody"></div></aside>';
-    }
-    h += '<div class="qflow" id="qflow"></div>';
-    h += '<div id="scoreBox"></div>';
-    h += '</div></div>';
+    /* 单栏真卷流：Part → Section → Directions → 原文 → 题目 */
+    h += '<div class="paper-flow"><div id="qflow"></div></div>';
+    h += '<div id="scoreBox"></div></div>';
     view.innerHTML = h;
 
     $("backHome").onclick = function () { renderHome(); };
     $("sheetBtn").onclick = openSheet;
     $("submitBtn").onclick = submitExam;
-    if ($("passageHead")) $("passageHead").onclick = function () {
-      var bx = $("passageBox"); bx.classList.toggle("collapsed");
-      $("passageToggle").textContent = bx.classList.contains("collapsed") ? "点击展开 ▼" : "点击折叠 ▲";
-    };
-    if ($("secTabs")) $("secTabs").onclick = function (e) {
-      var btn = e.target.closest("button[data-key]");
-      if (!btn) return;
-      var el = document.getElementById("sec-" + btn.dataset.key);
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-    };
     $("qflow").addEventListener("click", onQListClick);
 
     renderQFlow(struct, hasAudio);
-    /* 音频优先放左栏；没有左栏（纯听力模式）时放到题目流最前面 */
-    if (hasAudio) {
-      var abHTML = audioBox(S.pid);
-      if ($("panelAudio")) $("panelAudio").innerHTML = abHTML;
-      else $("qflow").insertAdjacentHTML("afterbegin", abHTML);
-    }
+    bindPassageToggle();
     if (hasAudio) bindAudio(S.pid);
-    showSection(S.secKey);
-    bindScrollSpy();
     updateExamProgress();
     startTimer();
   }
 
-  /* 连续排布整卷：Part 标题 + Section 标题 + Directions + 题目 */
+  /* 连续排布整卷：Part → Section → Directions → 原文 → 题目（与真卷一致） */
   function renderQFlow(struct, hasAudio) {
     var p = paperOf(S.pid), h = "";
     struct.forEach(function (part) {
       h += '<h2 class="part-h"><span class="part-no">Part ' + part.part + '</span>' +
         '<span class="part-en">' + esc(part.en) + '</span>' +
         '<span class="part-zh">' + esc(part.zh) + '</span></h2>';
+      if (part.part === "II" && hasAudio) h += audioBox(S.pid);
       part.secs.forEach(function (sec) {
         h += '<h3 class="sec-h" id="sec-' + sec.key + '" data-key="' + sec.key + '">' +
           '<span class="sec-no">Section ' + sec.letter + (sec.tag ? " " + sec.tag : "") + '</span>' +
           '<span class="sec-zh">' + esc(sec.zh) + '</span>' +
           '<span class="sec-range">第 ' + sec.nos[0] + "–" + sec.nos[sec.nos.length - 1] + ' 题</span></h3>';
         h += '<p class="sec-dir"><b>Directions:</b> ' + esc(sec.dir) + '</p>';
+        /* 原文：直接排在题目之前，和真卷一样 */
+        if (sec.passage) {
+          h += '<div class="passage-block" id="pass-' + sec.key + '">' +
+            '<div class="pb-head">📖 阅读原文' +
+            '<span class="pb-hint">' + esc(sec.zh) + ' · 可折叠</span></div>' +
+            '<div class="pb-body">' + passageHTML(sec.passage, sec.key) + '</div></div>';
+        }
         sec.nos.forEach(function (no) {
           var q = findQ(p, no);
           if (q) h += qItemHTML(q);
@@ -437,6 +413,16 @@
       });
     });
     $("qflow").innerHTML = h;
+  }
+
+  /* 原文块折叠 */
+  function bindPassageToggle() {
+    document.querySelectorAll(".pb-head").forEach(function (hd) {
+      hd.onclick = function () {
+        var blk = this.parentNode;
+        blk.classList.toggle("collapsed");
+      };
+    });
   }
 
   function findQ(p, no) {
@@ -648,60 +634,6 @@
     return h;
   }
 
-  /* ---------------- 左栏：跟随滚动切换原文 ---------------- */
-  function showSection(key) {
-    if (!S.struct) return;
-    var all = flatSections(S.struct), sec = null;
-    all.forEach(function (x) { if (x.key === key) sec = x; });
-    if (!sec) sec = all[0];
-    if (!sec) return;
-    S.secKey = sec.key;
-    if ($("secTabs")) {
-      $("secTabs").querySelectorAll("button").forEach(function (b) {
-        b.classList.toggle("on", b.dataset.key === sec.key);
-      });
-    }
-    var pa = $("panelAudio"), ph = $("passageHead"), pb = $("passageBody");
-    if (!pb) return;
-    var isListen = sec.key.charAt(0) === "L";
-    if (pa) pa.style.display = isListen ? "" : "none";
-    if (ph) ph.style.display = (isListen || !sec.passage) ? "none" : "";
-    if (isListen) {
-      pb.innerHTML = '<p class="panel-hint">🎧 本部分是听力题，录音见上方播放器。' +
-        '题干与选项已印在卷面上，播放时可对照作答。</p>';
-      return;
-    }
-    if (sec.passage) {
-      $("passageTitle").textContent = "Section " + sec.letter + (sec.tag ? " " + sec.tag : "") + " · " + sec.zh;
-      pb.innerHTML = passageHTML(sec.passage, sec.key);
-    } else {
-      pb.innerHTML = '<p class="panel-hint">本部分没有原文。</p>';
-    }
-  }
-
-  var spyHandler = null;
-  function bindScrollSpy() {
-    if (spyHandler) window.removeEventListener("scroll", spyHandler);
-    var heads = [].slice.call(document.querySelectorAll(".sec-h"));
-    if (!heads.length) { spyHandler = null; return; }
-    var ticking = false;
-    spyHandler = function () {
-      if (ticking) return;
-      ticking = true;
-      requestAnimationFrame(function () {
-        ticking = false;
-        var best = heads[0], bestTop = -1e9;
-        heads.forEach(function (h) {
-          var t = h.getBoundingClientRect().top;
-          if (t <= 190 && t > bestTop) { bestTop = t; best = h; }
-        });
-        if (best.dataset.key && best.dataset.key !== S.secKey) showSection(best.dataset.key);
-      });
-    };
-    window.addEventListener("scroll", spyHandler, { passive: true });
-    spyHandler();
-  }
-
   function updateExamProgress() {
     var done = 0;
     S.queue.forEach(function (x) { if (Store.getAnswer(qidOf(x.pid, x.no))) done++; });
@@ -749,8 +681,8 @@
 
     // 重绘整卷（带对错与解析）
     renderQFlow(S.struct, !!AUDIO[S.pid] && S.queue.some(function (x) { return x.no === 1; }));
+    bindPassageToggle();
     S.queue.forEach(function (x) { paintQuestion(x.no); });   // 每题重新着色并展开解析
-    showSection(S.secKey);
 
     var total = S.queue.length;
     var rate = Math.round(right / total * 100);
@@ -1109,7 +1041,10 @@
         var el = $("q-" + no);
         if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
         var sc = sectionByNo(S.struct, no);
-        if (sc) showSection(sc.key);
+        if (sc) {
+          var el2 = document.getElementById("sec-" + sc.key);
+          if (el2) el2.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
       }
     };
     $("sheetClose2").onclick = closeSheet;

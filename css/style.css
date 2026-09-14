@@ -190,6 +190,26 @@ main{position:relative;z-index:1;max-width:1360px;margin:0 auto;padding:22px 22p
 .passage-body .blank{color:var(--rose-d);font-weight:700;background:#fff2f7;padding:0 4px;border-radius:5px;letter-spacing:1px}
 .passage.collapsed .passage-body{display:none}
 
+/* ---------- 真卷原文块（直接排在题目之前） ---------- */
+.paper-flow{display:flex;flex-direction:column;gap:14px;min-width:0}
+.passage-block{
+  background:#fff;border-radius:var(--radius);box-shadow:var(--shadow);
+  border:1px solid rgba(255,255,255,.9);overflow:hidden;
+}
+.pb-head{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;
+  padding:12px 18px;border-bottom:1px solid var(--line);cursor:pointer;
+  font-size:13.5px;font-weight:600;color:#5e4a53;background:#fffafc;
+}
+.pb-head .pb-hint{font-size:12px;color:var(--muted);font-weight:400}
+.passage-block .pb-body{padding:16px 20px 20px;font-size:15px;line-height:1.9;color:var(--ink-2)}
+.passage-block .pb-body p{margin:0 0 13px;text-indent:1.7em}
+.passage-block .pb-body p:last-child{margin-bottom:0}
+.passage-block .pb-body b{color:var(--rose-d);font-weight:700;margin-right:4px}
+.passage-block .pb-body .blank{color:var(--rose-d);font-weight:700;background:#fff2f7;padding:0 4px;border-radius:5px;letter-spacing:1px}
+.passage-block.collapsed .pb-body{display:none}
+.passage-block.collapsed .pb-head{border-bottom:0}
+
 /* ---------- 试卷层级标题：Part / Section ---------- */
 .qflow{display:flex;flex-direction:column;gap:14px;min-width:0}
 .part-h{
