@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>六级真题刷题 · CET-6 2020–2026</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/ink.css">
+</head>
+<body>
+
+<div class="aurora" aria-hidden="true"></div>
+
+<!-- ============ 顶栏 ============ -->
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand" id="brandHome">
+      <div class="logo">CET<span>6</span></div>
+      <div class="brand-txt">
+        <h1>六级真题刷题</h1>
+        <p id="brandSub">2020 — 2026 · 46 套真题</p>
+      </div>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button data-mode="sequence" class="on">顺序刷题</button>
+      <button data-mode="random">随机练习</button>
+      <button data-mode="papers">按套卷</button>
+      <button data-mode="types">按题型</button>
+      <button data-mode="wrong">错题本 <b id="wrongBadge">0</b></button>
+      <button data-mode="fav">收藏 <b id="favBadge">0</b></button>
+    </nav>
+    <div class="topstats" id="topstats"></div>
+  </div>
+</header>
+
+<main id="view">
+  <div class="loading">正在载入题库，请稍候…</div>
+</main>
+
+<!-- ============ 答题卡抽屉 ============ -->
+<div class="drawer-mask" id="sheetMask" hidden></div>
+<aside class="drawer" id="sheet" hidden>
+  <div class="drawer-head">
+    <strong>答题卡</strong>
+    <div class="legend">
+      <span><i class="dot ok"></i>答对</span>
+      <span><i class="dot bad"></i>答错</span>
+      <span><i class="dot none"></i>未答</span>
+    </div>
+    <button class="icon-btn" id="sheetClose">×</button>
+  </div>
+  <div class="drawer-body" id="sheetBody"></div>
+  <div class="drawer-foot" id="sheetFoot"></div>
+</aside>
+
+<!-- ============ 透明模块（手写层） ============ -->
+<canvas id="inkCanvas" class="ink-canvas" hidden></canvas>
+<div class="ink-frame" id="inkFrame" hidden><span>透明模块 · 手写模式</span></div>
+
+<div class="ink-dock" id="inkDock">
+  <button class="ink-toggle" id="inkToggle" title="开启/关闭透明模块（快捷键 D）">
+    <svg viewBox="0 0 24 24"><path d="M4 20h4l10-10-4-4L4 16v4z"/><path d="M14 6l4 4"/></svg>
+    <span>透明模块</span>
+  </button>
+  <div class="ink-tools" id="inkTools" hidden>
+    <button class="sw on" data-color="#e5487f" style="--c:#e5487f"></button>
+    <button class="sw" data-color="#1f6feb" style="--c:#1f6feb"></button>
+    <button class="sw" data-color="#111418" style="--c:#111418"></button>
+    <button class="sw" data-color="#12a150" style="--c:#12a150"></button>
+    <button class="sw hl" data-color="#ffe14d" style="--c:#ffe14d"></button>
+    <span class="sep"></span>
+    <button class="tool" data-size="2">细</button>
+    <button class="tool on" data-size="4">中</button>
+    <button class="tool" data-size="9">粗</button>
+    <span class="sep"></span>
+    <button class="tool" id="inkEraser" title="橡皮">橡皮</button>
+    <button class="tool" id="inkUndo" title="撤销">撤销</button>
+    <button class="tool" id="inkClear" title="清空本题">清空</button>
+    <button class="tool" id="inkSave" title="保存为图片">存图</button>
+    <button class="tool" id="inkPass" title="开启后点击可穿透到页面，便于边写边操作">穿透</button>
+  </div>
+</div>
+
+<script src="data/index.js"></script>
+<script src="js/store.js"></script>
+<script src="js/app.js"></script>
+<script src="js/ink.js"></script>
+</body>
+</html>
