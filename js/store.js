@@ -1,9 +1,9 @@
 /* ==========================================================================
-   本地状态：答题记录 / 错题本 / 收藏 / 进度（localStorage）
+   本地状态：答题记录 / 错题本 / 收藏 / 进度 / 主观题草稿（localStorage）
    ========================================================================== */
 window.Store = (function () {
-  var KEY = "cet6quiz.v1";
-  var d = { answers: {}, wrong: {}, fav: {}, pos: {}, seen: {} };
+  var KEY = "cet6quiz.v2";
+  var d = { answers: {}, wrong: {}, fav: {}, pos: {}, subj: {}, shown: {} };
 
   function load() {
     try {
@@ -14,9 +14,10 @@ window.Store = (function () {
         d.wrong = o.wrong || {};
         d.fav = o.fav || {};
         d.pos = o.pos || {};
-        d.seen = o.seen || {};
+        d.subj = o.subj || {};
+        d.shown = o.shown || {};
       }
-    } catch (e) { /* 隐私模式等，忽略 */ }
+    } catch (e) { /* 隐私模式 / file:// 下忽略 */ }
   }
 
   var saveTimer = null;
@@ -25,7 +26,7 @@ window.Store = (function () {
     saveTimer = setTimeout(function () {
       saveTimer = null;
       try { localStorage.setItem(KEY, JSON.stringify(d)); } catch (e) {}
-    }, 180);
+    }, 200);
   }
 
   return {
@@ -36,9 +37,7 @@ window.Store = (function () {
     answer: function (qid, choice, ok) {
       var prev = d.answers[qid];
       d.answers[qid] = { c: choice, ok: !!ok, t: Date.now(), n: (prev ? (prev.n || 1) : 0) + 1 };
-      if (ok) delete d.wrong[qid];
-      else d.wrong[qid] = 1;
-      d.seen[qid] = 1;
+      if (ok) delete d.wrong[qid]; else d.wrong[qid] = 1;
       save();
     },
     getAnswer: function (qid) { return d.answers[qid] || null; },
@@ -60,6 +59,16 @@ window.Store = (function () {
     favCount: function () { return Object.keys(d.fav).length; },
     clearFav: function () { d.fav = {}; save(); },
 
+    /* ---------- 主观题草稿 ---------- */
+    getSubjText: function (pid, kind) { return (d.subj[pid] || {})[kind] || ""; },
+    setSubjText: function (pid, kind, text) {
+      d.subj[pid] = d.subj[pid] || {};
+      d.subj[pid][kind] = text;
+      save();
+    },
+    getSubjShown: function (pid) { return !!d.shown[pid]; },
+    setSubjShown: function (pid) { d.shown[pid] = 1; save(); },
+
     /* ---------- 进度 ---------- */
     setPos: function (k, v) { d.pos[k] = v; save(); },
     getPos: function (k) { return d.pos[k]; },
@@ -67,10 +76,7 @@ window.Store = (function () {
     /* ---------- 统计 ---------- */
     stats: function () {
       var done = 0, right = 0;
-      for (var k in d.answers) {
-        done++;
-        if (d.answers[k].ok) right++;
-      }
+      for (var k in d.answers) { done++; if (d.answers[k].ok) right++; }
       return { done: done, right: right, rate: done ? Math.round(right / done * 100) : 0 };
     },
     paperProgress: function (pid, nos) {
@@ -81,8 +87,18 @@ window.Store = (function () {
       }
       return { done: done, total: nos.length, right: right };
     },
+    /* 跨多套卷统计（用于年份卡片） */
+    nosProgress: function (pids, nos) {
+      var done = 0, right = 0;
+      for (var i = 0; i < pids.length; i++) {
+        var pr = this.paperProgress(pids[i], nos);
+        done += pr.done; right += pr.right;
+      }
+      return { done: done, total: nos.length, right: right };
+    },
+
     resetAll: function () {
-      d = { answers: {}, wrong: {}, fav: {}, pos: {}, seen: {} };
+      d = { answers: {}, wrong: {}, fav: {}, pos: {}, subj: {}, shown: {} };
       try { localStorage.removeItem(KEY); } catch (e) {}
     }
   };

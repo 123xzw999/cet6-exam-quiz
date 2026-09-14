@@ -1,14 +1,19 @@
 /* ==========================================================================
-   六级真题刷题 —— 主逻辑
+   六级真题刷题系统 —— 主逻辑
+   登录 → 首页(年份/考期/套卷) → 整卷考试·听力·阅读·主观题 / 刷题
    ========================================================================== */
 (function () {
   "use strict";
 
   var INDEX = window.__CET6_INDEX || [];
+  var AUDIO = window.__CET6_AUDIO || {};
   window.__CET6_PAPERS = window.__CET6_PAPERS || {};
   var PAPERS = window.__CET6_PAPERS;
   var loading = {};
   var view = document.getElementById("view");
+
+  var ACCOUNT = { user: "12345678", pass: "xiaoxiong666" };
+  var SESSION_KEY = "cet6quiz.login";
 
   /* ---------------- 工具 ---------------- */
   function $(id) { return document.getElementById(id); }
@@ -23,7 +28,7 @@
     if (no <= 45) return "matching";
     return "reading";
   }
-  var PART_LABEL = { listening: "听力理解", cloze: "选词填空", matching: "信息匹配", reading: "仔细阅读" };
+  var PART_LABEL = { listening: "听力理解", cloze: "选词填空", matching: "长篇阅读（信息匹配）", reading: "仔细阅读" };
   var EXPLAIN_LABEL = {
     "定位": "原文定位", "信号": "信号提示", "替换": "同义替换", "排除": "干扰项排除",
     "判型": "题型判定", "拆句": "题干拆句", "选项": "选项分析",
@@ -35,11 +40,15 @@
 
   function toast(msg) {
     var t = document.createElement("div");
-    t.className = "toast";
-    t.textContent = msg;
+    t.className = "toast"; t.textContent = msg;
     document.body.appendChild(t);
     setTimeout(function () { t.remove(); }, 1700);
   }
+  function meta(pid) {
+    for (var i = 0; i < INDEX.length; i++) if (INDEX[i].id === pid) return INDEX[i];
+    return null;
+  }
+  function qidOf(pid, no) { return pid + "#" + no; }
 
   /* ---------------- 数据加载 ---------------- */
   function loadPaper(pid) {
@@ -57,452 +66,852 @@
     });
     return loading[pid];
   }
-
-  function qidOf(pid, no) { return pid + "#" + no; }
+  function paperOf(pid) { return PAPERS[pid] || null; }
 
   /* ---------------- 状态 ---------------- */
   var S = {
-    mode: "home",
-    arg: null,
-    queue: [],
-    qi: 0,
-    cur: null,        // 当前题目对象
-    curPid: null,
+    view: "home",
+    year: null,
+    pid: null,
+    mode: null,           // full | listening | reading | subjective
+    queue: [], qi: 0,
+    cur: null, curPid: null,
     revealed: false,
-    sheet: false,
+    submitted: false,
+    secKey: null,         // 考试页左侧原文当前分区
+    practice: { mode: "sequence", arg: null },
     startAt: 0
   };
 
-  function setMode(mode, arg) {
-    S.mode = mode; S.arg = arg;
-    var tabs = document.querySelectorAll("#tabs button");
-    for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle("on", tabs[i].dataset.mode === mode);
+  /* ================================================================
+     登录
+     ================================================================ */
+  function isLogged() {
+    try { return sessionStorage.getItem(SESSION_KEY) === "1"; } catch (e) { return false; }
+  }
+  function setLogged(v) {
+    try { v ? sessionStorage.setItem(SESSION_KEY, "1") : sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
   }
 
-  function buildQueue(mode, arg) {
-    var q = [];
-    var i, j, p;
-    if (mode === "sequence") {
-      for (i = 0; i < INDEX.length; i++)
-        for (j = 0; j < INDEX[i].nos.length; j++) q.push({ pid: INDEX[i].id, no: INDEX[i].nos[j] });
-    } else if (mode === "random") {
-      for (i = 0; i < INDEX.length; i++)
-        for (j = 0; j < INDEX[i].nos.length; j++) q.push({ pid: INDEX[i].id, no: INDEX[i].nos[j] });
-      for (i = q.length - 1; i > 0; i--) { j = Math.floor(Math.random() * (i + 1)); p = q[i]; q[i] = q[j]; q[j] = p; }
-      q = q.slice(0, 100);
-    } else if (mode === "papers") {
-      for (i = 0; i < INDEX.length; i++) if (INDEX[i].id === arg) {
-        for (j = 0; j < INDEX[i].nos.length; j++) q.push({ pid: arg, no: INDEX[i].nos[j] });
+  function initLogin() {
+    $("loginUser").value = ACCOUNT.user;     // 打开即显示用户名
+    $("loginPass").value = ACCOUNT.pass;     // 直接点「立即登录」即可进入
+    $("loginForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var u = $("loginUser").value.trim();
+      var p = $("loginPass").value;
+      if (u === ACCOUNT.user && p === ACCOUNT.pass) {
+        setLogged(true);
+        enterApp();
+      } else {
+        var err = $("loginErr");
+        err.hidden = false;
+        err.textContent = u !== ACCOUNT.user ? "用户名不正确" : "密码不正确，请重新输入";
+        $("loginPass").focus();
       }
-    } else if (mode === "types") {
-      for (i = 0; i < INDEX.length; i++)
-        for (j = 0; j < INDEX[i].nos.length; j++)
-          if (partOf(INDEX[i].nos[j]) === arg) q.push({ pid: INDEX[i].id, no: INDEX[i].nos[j] });
-    } else if (mode === "wrong" || mode === "fav") {
-      var list = mode === "wrong" ? Store.wrongList() : Store.favList();
-      list.sort();
-      for (i = 0; i < list.length; i++) {
-        var k = list[i].split("#");
-        q.push({ pid: k[0], no: parseInt(k[1], 10) });
-      }
-    }
-    return q;
-  }
-
-  function start(mode, arg, atIndex) {
-    var q = buildQueue(mode, arg);
-    if (!q.length) { toast(mode === "wrong" ? "错题本是空的，先去刷几题吧" : "收藏夹是空的"); return; }
-    S.queue = q;
-    S.mode = mode; S.arg = arg;
-    S.qi = atIndex || 0;
-    S.startAt = Date.now();
-    setMode(mode, arg);
-    go(S.qi);
-  }
-
-  function go(i) {
-    if (i < 0) i = 0;
-    if (i > S.queue.length - 1) i = S.queue.length - 1;
-    S.qi = i;
-    S.revealed = false;
-    var it = S.queue[i];
-    S.curPid = it.pid;
-    Store.setPos("last", { mode: S.mode, arg: S.arg, qi: i });
-    view.innerHTML = '<div class="loading">正在载入题目…</div>';
-    loadPaper(it.pid).then(function (p) {
-      var q = null;
-      for (var k = 0; k < p.questions.length; k++) if (p.questions[k].no === it.no) { q = p.questions[k]; break; }
-      if (!q) { toast("题目缺失"); return; }
-      S.cur = q;
-      renderPractice();
-    }).catch(function (e) {
-      view.innerHTML = '<div class="empty"><div class="ei">⚠️</div><p>题目数据加载失败</p>' +
-        '<p style="font-size:12.5px;color:#b6a7ae;margin-top:6px">' + esc(e.message) +
-        '<br>请确认 data/ 目录完整，或通过本地服务器打开（python -m http.server）</p></div>';
     });
+    if (isLogged()) enterApp();
   }
 
-  /* ---------------- 首页 ---------------- */
+  function enterApp() {
+    $("login").hidden = true;
+    $("app").hidden = false;
+    refreshBadges();
+    renderHome();
+  }
+
+  function logout() {
+    setLogged(false);
+    $("app").hidden = true;
+    $("login").hidden = false;
+    $("loginErr").hidden = true;
+    $("loginUser").value = ACCOUNT.user;
+    $("loginPass").value = ACCOUNT.pass;
+  }
+
+  /* ================================================================
+     首页：年份 → 考期 → 套卷 × 模式
+     ================================================================ */
+  function years() {
+    var seen = {}, out = [];
+    INDEX.forEach(function (p) { if (!seen[p.year]) { seen[p.year] = 1; out.push(p.year); } });
+    return out.sort();
+  }
+
   function renderHome() {
-    S.mode = "home"; S.cur = null;
-    setMode("home", null);
+    S.view = "home"; S.cur = null; S.pid = null;
+    setNav("home");
     var st = Store.stats();
     var total = INDEX.reduce(function (n, p) { return n + p.count; }, 0);
-    var wrongN = Store.wrongCount(), favN = Store.favCount();
-    var pos = Store.getPos("last");
-    var typeCount = { listening: 0, cloze: 0, matching: 0, reading: 0 };
-    INDEX.forEach(function (p) {
-      for (var k in p.parts) typeCount[k] = (typeCount[k] || 0) + p.parts[k];
-    });
+    var audioN = Object.keys(AUDIO).length;
 
-    var h = '';
-    h += '<section class="hero">';
-    h += '<h2>六级真题 · <em>刷题模式</em></h2>';
-    h += '<p class="sub">2020 — 2026 共 46 套真题，逐题附带答案与「定位 / 信号 / 替换 / 排除」四维解析。' +
-      '选一个模式开始，答完立刻判分。</p>';
+    var h = '<section class="hero">';
+    h += '<h2>选择<em>考试年份</em></h2>';
+    h += '<p class="sub">46 套真题按考期编排 · 每套可选「整卷考试 / 听力 / 阅读 / 主观题」四种模式' +
+      ' · 27 套含在线听力原声</p>';
     h += '<div class="hero-stats">' +
-      hs(total, "总题量") + hs(INDEX.length, "套真题") +
+      hs(total, "总题量") + hs(INDEX.length, "套真题") + hs(audioN, "套听力音频") +
       hs(st.done, "已作答") + hs(st.rate + "%", "正确率") +
-      hs(wrongN, "错题") + hs(favN, "收藏") +
-      '</div>';
-    if (pos && pos.mode && pos.mode !== "home") {
-      h += '<div style="margin-top:18px"><button class="btn primary" id="resumeBtn">继续上次：' +
-        esc(modeName(pos.mode, pos.arg)) + ' 第 ' + (pos.qi + 1) + ' 题</button></div>';
-    }
-    h += '</section>';
+      '</div></section>';
 
-    h += '<div class="sec-title">练习模式<span class="line"></span></div>';
-    h += '<div class="modes">' +
-      modeCard("sequence", "▶", "顺序刷题", "从 2020 年 7 月第 1 套开始，按年份一路刷到最新", total + " 题") +
-      modeCard("random", "🎲", "随机练习", "随机抽 100 题混合练习，适合考前突击", "100 题") +
-      modeCard("papers", "📚", "按套卷模考", "整套 55 题完整模考，可交卷看成绩", "46 套") +
-      modeCard("types", "🧩", "按题型专项", "听力 / 选词填空 / 信息匹配 / 仔细阅读", "4 类") +
-      modeCard("wrong", "❌", "错题本", "做错的题自动收录，答对后移出", wrongN + " 题") +
-      modeCard("fav", "★", "我的收藏", "随时收藏好题、难句和值得回看的解析", favN + " 题") +
-      '</div>';
-
-    h += '<div class="sec-title">按题型专项<span class="line"></span></div>';
-    h += '<div class="papers">' +
-      typeCard("listening", "听力理解", typeCount.listening, "1–25 题 · 长对话 / 短文 / 讲座") +
-      typeCard("cloze", "选词填空", typeCount.cloze, "26–35 题 · 15 选 10") +
-      typeCard("matching", "长篇阅读", typeCount.matching, "36–45 题 · 段落信息匹配") +
-      typeCard("reading", "仔细阅读", typeCount.reading, "46–55 题 · 四选一") +
-      '</div>';
-
-    h += '<div class="sec-title">按套卷刷题<span class="line"></span></div>';
-    h += '<div class="papers">';
-    INDEX.forEach(function (p) {
-      var pr = Store.paperProgress(p.id, p.nos);
+    h += '<div class="years">';
+    years().forEach(function (y) {
+      var ps = INDEX.filter(function (p) { return p.year === y; });
+      var nos = []; ps.forEach(function (p) { nos = nos.concat(p.nos); });
+      var pr = Store.nosProgress(ps.map(function (p) { return p.id; }), nos);
       var pct = Math.round(pr.done / pr.total * 100);
-      h += '<div class="paper" data-paper="' + p.id + '">' +
-        '<div class="pt"><b>' + esc(p.label) + '</b><span>' + esc(p.set) + '</span></div>' +
-        '<div class="pm">' + pr.total + ' 题 · 已做 ' + pr.done + ' · 正确率 ' + (pr.done ? Math.round(pr.right / pr.done * 100) : 0) + '%</div>' +
-        '<div class="pbar"><i style="width:' + pct + '%"></i></div>' +
-        '<div class="pgo">' + (pr.done ? "继续第 " + (pr.done + 1) + " 题 →" : "开始刷题 →") + '</div>' +
-        '</div>';
+      h += '<button class="year' + (S.year === y ? " on" : "") + '" data-year="' + y + '">' +
+        '<div class="yn">' + y + '</div>' +
+        '<div class="yl">' + ps.length + ' 套 · ' + pr.total + ' 题' +
+        (AUDIO[ps[0].id] ? " · 含听力音频" : "") + '</div>' +
+        '<div class="yb"><i style="width:' + pct + '%"></i></div>' +
+        '<div class="yp">已做 ' + pr.done + ' / ' + pr.total + ' · 正确率 ' +
+        (pr.done ? Math.round(pr.right / pr.done * 100) : 0) + '%</div></button>';
     });
     h += '</div>';
 
-    h += '<div class="sec-title">数据<span class="line"></span></div>';
-    h += '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
-      '<button class="btn ghost" id="clearWrong">清空错题本</button>' +
-      '<button class="btn ghost" id="clearFav">清空收藏</button>' +
-      '<button class="btn ghost" id="resetAll">重置全部记录</button>' +
+    if (S.year) {
+      var yearPapers = INDEX.filter(function (p) { return p.year === S.year; });
+      ["上半年", "下半年"].forEach(function (half) {
+        var list = yearPapers.filter(function (p) { return p.half === half; });
+        if (!list.length) return;
+        var periods = [];
+        list.forEach(function (p) { if (periods.indexOf(p.period) < 0) periods.push(p.period); });
+        periods.forEach(function (per) {
+          var ps = list.filter(function (p) { return p.period === per; });
+          h += '<section class="period">';
+          h += '<div class="period-head"><h3>' + esc(per) + '</h3>' +
+            '<span class="ptag">' + half + '</span>' +
+            '<span class="pnum">' + ps.length + ' 套 · ' + ps[0].label + '</span></div>';
+          ps.forEach(function (p) {
+            var pr = Store.paperProgress(p.id, p.nos);
+            var pct = Math.round(pr.done / pr.total * 100);
+            var hasL = p.nos.indexOf(1) >= 0;
+            var hasR = p.nos.some(function (n) { return n >= 26; });
+            h += '<div class="paper-row">';
+            h += '<div class="pinfo2"><b>' + esc(p.label) + ' ' + esc(p.set) + '</b>' +
+              '<div class="pm2">' + p.count + ' 题' + (AUDIO[p.id] ? " · 🎧 有听力音频" : "") +
+              ' · 已做 ' + pr.done + ' · 正确率 ' + (pr.done ? Math.round(pr.right / pr.done * 100) : 0) + '%</div>' +
+              '<div class="pbar3"><i style="width:' + pct + '%"></i></div></div>';
+            h += '<div class="mode-btns">';
+            h += mb(p.id, "full", "📄", "整卷考试");
+            if (hasL) h += mb(p.id, "listening", "🎧", "听力部分");
+            if (hasR) h += mb(p.id, "reading", "📖", "阅读部分");
+            h += mb(p.id, "subjective", "✍️", "主观题部分");
+            h += '</div></div>';
+          });
+          h += '</section>';
+        });
+      });
+    } else {
+      h += '<div class="empty" style="margin-top:16px"><div class="ei">👆</div>' +
+        '<p>先选一个年份，下面会列出该年全部套卷与练习模式</p></div>';
+    }
+
+    h += '<div class="sec-title">刷题与统计<span class="line"></span></div>';
+    h += '<div class="papers">' +
+      '<div class="year" data-quick="sequence"><div class="yn" style="font-size:22px">顺序刷题</div>' +
+      '<div class="yl">从 2020 年 7 月一路刷到 2026 年</div></div>' +
+      '<div class="year" data-quick="random"><div class="yn" style="font-size:22px">随机练习</div>' +
+      '<div class="yl">随机抽 100 题混合练习</div></div>' +
+      '<div class="year" data-quick="wrong"><div class="yn" style="font-size:22px">错题本</div>' +
+      '<div class="yl">做错的题自动收录</div></div>' +
+      '<div class="year" data-quick="fav"><div class="yn" style="font-size:22px">我的收藏</div>' +
+      '<div class="yl">随时回看标记过的题</div></div>' +
       '</div>';
 
     view.innerHTML = h;
 
-    if ($("resumeBtn")) $("resumeBtn").onclick = function () {
-      var p = Store.getPos("last");
-      start(p.mode, p.arg, p.qi);
-    };
-    var cards = view.querySelectorAll(".mode");
-    for (var i = 0; i < cards.length; i++) {
-      cards[i].onclick = function () {
-        var m = this.dataset.mode;
-        if (m === "types") { jumpToTypes(); return; }
-        start(m, null, 0);
-      };
-    }
-    var tcards = view.querySelectorAll("[data-type]");
-    for (i = 0; i < tcards.length; i++) {
-      tcards[i].onclick = function () { start("types", this.dataset.type, 0); };
-    }
-    var pcards = view.querySelectorAll("[data-paper]");
-    for (i = 0; i < pcards.length; i++) {
-      pcards[i].onclick = function () {
-        var pid = this.dataset.paper, at = 0;
-        for (var k = 0; k < INDEX.length; k++) if (INDEX[k].id === pid) {
-          var pr = Store.paperProgress(pid, INDEX[k].nos);
-          if (pr.done > 0 && pr.done < pr.total) at = pr.done;
+    view.querySelectorAll("[data-year]").forEach(function (b) {
+      b.onclick = function () {
+        S.year = (S.year === this.dataset.year) ? null : this.dataset.year;
+        renderHome();
+        if (S.year) {
+          var el = view.querySelector(".period");
+          if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
         }
-        start("papers", pid, at);
       };
+    });
+    view.querySelectorAll("[data-mode-btn]").forEach(function (b) {
+      b.onclick = function () { openPaper(this.dataset.pid, this.dataset.modeBtn); };
+    });
+    view.querySelectorAll("[data-quick]").forEach(function (b) {
+      b.onclick = function () {
+        var m = this.dataset.quick;
+        if (m === "wrong" || m === "fav") startPractice(m, null, 0);
+        else startPractice(m, null, 0);
+      };
+    });
+  }
+  function hs(n, l) { return '<div class="hs"><div class="n">' + n + '</div><div class="l">' + l + '</div></div>'; }
+  function mb(pid, mode, icon, label) {
+    return '<button data-pid="' + pid + '" data-mode-btn="' + mode + '"><span class="mi">' + icon +
+      '</span><b>' + label + '</b></button>';
+  }
+
+  /* ================================================================
+     打开某套卷的某个模式
+     ================================================================ */
+  function openPaper(pid, mode) {
+    S.pid = pid; S.mode = mode; S.submitted = false; S.revealed = false;
+    S.startAt = Date.now();
+    view.innerHTML = '<div class="loading">正在载入 ' + esc(pid) + ' …</div>';
+    loadPaper(pid).then(function () {
+      if (mode === "subjective") renderSubjective();
+      else renderExam();
+    }).catch(function (e) {
+      view.innerHTML = '<div class="empty"><div class="ei">⚠️</div><p>题目数据加载失败</p>' +
+        '<p style="font-size:12.5px;color:#b6a7ae;margin-top:6px">' + esc(e.message) + '</p></div>';
+    });
+  }
+
+  function modeNos(p, mode) {
+    if (mode === "listening") return p.nos.filter(function (n) { return n <= 25; });
+    if (mode === "reading") return p.nos.filter(function (n) { return n >= 26; });
+    return p.nos.slice();
+  }
+
+  /* ---------------- 分区（左侧原文用） ---------------- */
+  function examSections(p, nos) {
+    var secs = [];
+    function add(key, title, sel) {
+      var list = nos.filter(sel);
+      if (!list.length) return;
+      secs.push({ key: key, title: title, nos: list, passage: "" });
     }
-    $("clearWrong").onclick = function () { Store.clearWrong(); refreshBadges(); renderHome(); toast("错题本已清空"); };
-    $("clearFav").onclick = function () { Store.clearFav(); refreshBadges(); renderHome(); toast("收藏已清空"); };
-    $("resetAll").onclick = function () {
-      if (confirm("将清除所有答题记录、错题与收藏，确定吗？")) {
-        Store.resetAll(); refreshBadges(); renderHome(); toast("已重置");
-      }
+    add("listening", "Part II 听力理解", function (n) { return n <= 25; });
+    add("cloze", "Part III Section A 选词填空", function (n) { return n >= 26 && n <= 35; });
+    add("matching", "Part III Section B 长篇阅读", function (n) { return n >= 36 && n <= 45; });
+    add("reading1", "Part III Section C 仔细阅读（一）", function (n) { return n >= 46 && n <= 50; });
+    add("reading2", "Part III Section C 仔细阅读（二）", function (n) { return n >= 51 && n <= 55; });
+    secs.forEach(function (s) {
+      var q = p.questions.filter(function (x) { return s.nos.indexOf(x.no) >= 0; })[0];
+      if (!q) return;
+      s.passage = q.passage || (p.passages && q.pref && p.passages[q.pref]) || "";
+    });
+    return secs;
+  }
+  function sectionOf(secs, no) {
+    for (var i = 0; i < secs.length; i++) if (secs[i].nos.indexOf(no) >= 0) return secs[i].key;
+    return secs.length ? secs[0].key : null;
+  }
+
+  /* ================================================================
+     考试页（整卷 / 听力 / 阅读）
+     ================================================================ */
+  function renderExam() {
+    var p = paperOf(S.pid), m = meta(S.pid);
+    var nos = modeNos(m, S.mode);   // 题号来自索引条目，套卷数据里没有 nos
+    var secs = examSections(p, nos);
+    S.queue = nos.map(function (n) { return { pid: S.pid, no: n }; });
+    S.secKey = sectionOf(secs, nos[0]);
+    S.view = "exam";
+    setNav(null);
+
+    var modeName = { full: "整卷考试", listening: "听力部分", reading: "阅读部分" }[S.mode];
+    var hasAudio = !!AUDIO[S.pid] && nos.indexOf(1) >= 0;
+    var withPassage = secs.some(function (s) { return s.passage; });
+
+    var h = '<div class="exam">';
+    h += '<div class="exam-head">' +
+      '<button class="back" id="backHome">←</button>' +
+      '<div class="etitle">' + esc(m.label) + " " + esc(m.set) + '<small>' + modeName + ' · ' + nos.length + ' 题</small></div>' +
+      '<div class="egrow"><div class="einfo"><span id="examProgress"></span><span class="timer" id="examTimer">00:00</span></div>' +
+      '<div class="pbar2"><i id="examBar" style="width:0%"></i></div></div>' +
+      '<div class="eact"><button class="btn sm ghost" id="sheetBtn">答题卡</button>' +
+      '<button class="btn sm primary" id="submitBtn">提交试卷</button></div>' +
+      '</div>';
+
+    h += '<div class="exam-body' + (withPassage ? " split" : "") + '">';
+
+    /* 左栏：原文 */
+    if (withPassage) {
+      h += '<aside class="passage" id="passageBox"><div class="passage-head" id="passageHead">' +
+        '<b id="passageTitle"></b><span id="passageToggle">点击折叠 ▲</span></div>' +
+        '<div class="passage-body" id="passageBody"></div></aside>';
+    }
+
+    /* 右栏 */
+    h += '<div>';
+    if (hasAudio) h += audioBox(S.pid);
+    h += '<div class="qlist" id="qlist"></div>';
+    h += '<div id="scoreBox"></div>';
+    h += '</div></div></div>';
+
+    view.innerHTML = h;
+
+    $("backHome").onclick = function () { renderHome(); };
+    $("sheetBtn").onclick = openSheet;
+    $("submitBtn").onclick = submitExam;
+    if ($("passageHead")) $("passageHead").onclick = function () {
+      var b = $("passageBox"); b.classList.toggle("collapsed");
+      $("passageToggle").textContent = b.classList.contains("collapsed") ? "点击展开 ▼" : "点击折叠 ▲";
+    };
+    $("qlist").addEventListener("click", onQListClick);
+    if (hasAudio) bindAudio(S.pid);
+
+    renderQList(secs);
+    showSection(S.secKey);
+    updateExamProgress();
+    startTimer();
+  }
+
+  function audioBox(pid) {
+    var a = AUDIO[pid];
+    return '<div class="audio-box"><div class="atitle">🎧 听力原声' +
+      '<span class="live">链接已验证可用</span></div>' +
+      '<audio id="audioEl" controls preload="none"></audio>' +
+      '<div class="seg-list" id="segList">' +
+      a.pieces.map(function (s, i) {
+        return '<button data-seek="' + s.start + '" title="' + esc(s.label) + '">' +
+          esc(s.label.replace(/·.*/, "").trim()) + " " + fmtTime(s.start) + '</button>';
+      }).join("") +
+      '</div>' +
+      '<div class="audio-fallback">若浏览器无法播放（HLS 流），可' +
+      '<a href="https://english-exam.lazynote.cn/cet6/paper/' + pid + '/?f=p" target="_blank" rel="noopener">在来源页收听 ↗</a></div></div>';
+  }
+  function fmtTime(t) {
+    t = Math.floor(t);
+    return ("0" + Math.floor(t / 60)).slice(-2) + ":" + ("0" + (t % 60)).slice(-2);
+  }
+  function bindAudio(pid) {
+    var el = $("audioEl"), a = AUDIO[pid];
+    if (!el) return;
+    var ok = false;
+    if (window.Hls && window.Hls.isSupported()) {
+      var hls = new window.Hls({ lowLatencyMode: false });
+      hls.loadSource(a.src);
+      hls.attachMedia(el);
+      ok = true;
+    } else if (el.canPlayType("application/vnd.apple.mpegurl")) {
+      el.src = a.src; ok = true;
+    }
+    if (!ok) {
+      $("segList").innerHTML = '<span style="font-size:12.5px;color:#b3262b">' +
+        '当前浏览器不支持 HLS 播放，请点上面的来源页链接收听</span>';
+      return;
+    }
+    $("segList").onclick = function (e) {
+      var b = e.target.closest("button[data-seek]");
+      if (!b) return;
+      el.currentTime = parseFloat(b.dataset.seek);
+      el.play();
+      this.querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x === b); });
     };
   }
 
-  function hs(n, l) { return '<div class="hs"><div class="n">' + n + '</div><div class="l">' + l + '</div></div>'; }
-  function modeCard(mode, icon, title, desc, num) {
-    return '<div class="mode" data-mode="' + mode + '">' +
-      '<div class="mi">' + icon + '</div><h3>' + title + '</h3><p>' + desc + '</p>' +
-      '<div class="mn">' + num + ' →</div></div>';
-  }
-  function typeCard(type, title, n, desc) {
-    return '<div class="paper" data-type="' + type + '">' +
-      '<div class="pt"><b>' + title + '</b><span>' + n + ' 题</span></div>' +
-      '<div class="pm">' + desc + '</div>' +
-      '<div class="pgo">进入专项 →</div></div>';
-  }
-  function modeName(m, arg) {
-    if (m === "sequence") return "顺序刷题";
-    if (m === "random") return "随机练习";
-    if (m === "papers") { for (var i = 0; i < INDEX.length; i++) if (INDEX[i].id === arg) return INDEX[i].label + " " + INDEX[i].set; return "套卷"; }
-    if (m === "types") return PART_LABEL[arg] || "题型";
-    if (m === "wrong") return "错题本";
-    if (m === "fav") return "收藏";
-    return "刷题";
-  }
-  function jumpToTypes() {
-    document.querySelector('.papers [data-type]').scrollIntoView({ behavior: "smooth", block: "center" });
+  /* ---------------- 题目渲染 ---------------- */
+  function renderQList(secs) {
+    var p = paperOf(S.pid);
+    var h = "";
+    p.questions.filter(function (q) { return S.queue.some(function (x) { return x.no === q.no; }); })
+      .forEach(function (q) { h += qItemHTML(q, secs); });
+    $("qlist").innerHTML = h;
   }
 
-  /* ---------------- 练习页 ---------------- */
-  /* 原文：优先取题目自带，其次取套卷级共享原文（去重后） */
-  function passageOf(q, pid) {
-    if (q.passage) return q.passage;
-    var p = PAPERS[pid];
-    if (p && p.passages && q.pref && p.passages[q.pref]) return p.passages[q.pref];
-    return "";
-  }
-
-  function passageHTML(q, pid) {
-    var t = passageOf(q, pid);
-    if (!t) return "";
-    if (q.part === "cloze") {
-      t = esc(t).replace(/\((\d{2})\)_{3,}\s*/g, '<span class="blank">($1) ______</span> ');
-      return '<p>' + t + "</p>";
-    }
-    if (q.part === "matching") {
-      var parts = t.split(/\n(?=[A-M]\)\s)/);
-      return parts.map(function (x) {
-        return "<p>" + esc(x.trim()).replace(/^([A-M])\)/, "<b>$1)</b>") + "</p>";
-      }).join("");
-    }
-    var ps = t.split(/\n{2,}/);
-    return ps.map(function (x) {
-      return "<p>" + esc(x.trim()).replace(/^(P\d+)\s/, "<b>$1</b> ") + "</p>";
-    }).join("");
-  }
-
-  function renderPractice() {
-    var q = S.cur, pid = S.curPid;
-    var idx = S.qi, total = S.queue.length;
-    var qid = qidOf(pid, q.no);
+  function qItemHTML(q, secs) {
+    var qid = qidOf(S.pid, q.no);
     var rec = Store.getAnswer(qid);
-    var meta = null;
-    for (var i = 0; i < INDEX.length; i++) if (INDEX[i].id === pid) meta = INDEX[i];
-    var part = q.part;
-    var hasPassage = !!passageOf(q, pid);
-    var wide = window.innerWidth > 1080;
-
-    var h = '<div class="practice">';
-
-    /* 头部 */
-    h += '<div class="p-head">';
-    h += '<button class="back" id="backHome">←</button>';
-    h += '<div class="ptitle">' + esc(meta.label) + " " + esc(meta.set) +
-      '<small>第 ' + q.no + ' 题 · ' + PART_LABEL[part] + '</small></div>';
-    h += '<div class="pgrow"><div class="pinfo"><span>' + modeName(S.mode, S.arg) +
-      '</span><span><b>' + (idx + 1) + '</b> / ' + total + '　正确率 ' + Store.stats().rate + '%</span></div>' +
-      '<div class="pbar2"><i style="width:' + Math.round((idx + 1) / total * 100) + '%"></i></div></div>';
-    h += '<div class="actions">';
-    h += '<button class="btn sm ghost" id="sheetBtn">答题卡</button>';
-    if (S.mode === "papers") h += '<button class="btn sm ghost" id="scoreBtn">成绩</button>';
-    h += '</div></div>';
-
-    /* 主体 */
-    h += '<div class="p-body' + (hasPassage && wide ? " split" : "") + '">';
-    if (hasPassage) {
-      h += '<aside class="passage" id="passageBox">' +
-        '<div class="passage-head" id="passageHead"><b>' +
-        (part === "reading" ? "阅读原文" : part === "matching" ? "原文段落 A–M" : "选词填空原文") +
-        '</b><span id="passageToggle">' + (wide ? "点击折叠 ▲" : "点击展开 ▼") + '</span></div>' +
-        '<div class="passage-body">' + passageHTML(q, pid) + '</div></aside>';
+    var cls = "qitem";
+    if (S.submitted) cls += rec ? (rec.ok ? " right" : " wrong") : "";
+    var h = '<div class="' + cls + '" id="q-' + q.no + '" data-qno="' + q.no + '">';
+    h += '<div class="qhead"><div class="qno">' + q.no + '</div>' +
+      '<div class="qfrom">' + PART_LABEL[q.part] + (q.type ? " · " + esc(q.type) : "") + '</div>' +
+      '<div class="spacer"></div>';
+    if (S.submitted) {
+      h += rec ? (rec.ok ? '<span class="mark ok">✓ 答对</span>' : '<span class="mark bad">✗ 答错</span>')
+        : '<span class="mark bad" style="background:#f3f4f7;color:#6b7280">未作答</span>';
     }
-
-    h += '<section class="qcard">';
-    h += '<div class="qmeta"><div class="qno">' + q.no + '</div>' +
-      '<div class="qfrom">' + esc(meta.label) + " " + esc(meta.set) + " · " + PART_LABEL[part] +
-      (q.type ? ' · ' + esc(q.type) : '') + '</div>' +
-      '<div class="spacer"></div>' +
-      '<button class="fav-btn' + (Store.isFav(qid) ? " on" : "") + '" id="favBtn">' +
-      (Store.isFav(qid) ? "★ 已收藏" : "☆ 收藏") + '</button></div>';
-
-    if (part === "listening") {
-      h += '<p class="hint-audio">🎧 听力题：题干与选项在卷面上，录音需在线收听 —— ' +
-        '<a href="https://english-exam.lazynote.cn/cet6/paper/' + pid + '/?f=p" target="_blank" rel="noopener">打开本套录音页 ↗</a></p>';
-    }
+    h += '</div>';
 
     if (q.stem) h += '<p class="qstem">' + esc(q.stem) + '</p>';
     if (q.stemZh) h += '<p class="qstem-zh">' + esc(q.stemZh) + '</p>';
 
-    /* 选项区 */
-    if (part === "cloze" && q.wordBank) {
-      h += '<div class="bank" id="bank">';
-      var letters = Object.keys(q.wordBank);
-      for (var b = 0; b < letters.length; b++) {
-        h += '<button data-k="' + letters[b] + '"><span class="bk">' + letters[b] + '</span>' +
-          esc(q.wordBank[letters[b]]) + '</button>';
-      }
-      h += '</div>';
-    } else if (part === "matching") {
-      h += '<div class="para-pick" id="bank">';
+    if (q.part === "cloze" && q.wordBank) {
+      h += '<div class="bank" data-bank="' + q.no + '">' +
+        Object.keys(q.wordBank).map(function (k) {
+          return '<button data-k="' + k + '" data-no="' + q.no + '"><span class="bk">' + k + '</span>' +
+            esc(q.wordBank[k]) + '</button>';
+        }).join("") + '</div>';
+    } else if (q.part === "matching") {
       var ps = q.paraOptions || "ABCDEFGHIJKLM".split("");
-      for (var p2 = 0; p2 < ps.length; p2++) h += '<button data-k="' + ps[p2] + '">' + ps[p2] + '</button>';
-      h += '</div>';
+      h += '<div class="para-pick" data-bank="' + q.no + '">' +
+        ps.map(function (L) { return '<button data-k="' + L + '" data-no="' + q.no + '">' + L + '</button>'; }).join("") +
+        '</div>';
     } else if (q.options && q.options.length === 4) {
-      h += '<div class="opts" id="opts">';
-      "ABCD".split("").forEach(function (L, i) {
-        h += '<button class="opt" data-k="' + L + '"><span class="k">' + L + '</span><span class="t">' +
-          esc(q.options[i]) + '</span></button>';
-      });
-      h += '</div>';
+      h += '<div class="opts" data-opts="' + q.no + '">' +
+        "ABCD".split("").map(function (L, i) {
+          return '<button class="opt" data-k="' + L + '" data-no="' + q.no + '"><span class="k">' + L +
+            '</span><span class="t">' + esc(q.options[i]) + '</span></button>';
+        }).join("") + '</div>';
     }
-
-    /* 判定 + 解析 */
-    h += '<div id="result"></div>';
-    h += '</section></div>';
-
-    /* 底部 */
-    h += '<div class="p-foot">' +
-      '<button class="btn" id="prevBtn"' + (idx === 0 ? " disabled" : "") + '>← 上一题</button>' +
-      '<button class="btn ghost" id="revealBtn">' + (rec ? "查看解析" : "不会，看答案") + '</button>' +
-      '<span class="spacer"></span>' +
-      '<span class="fbadge" id="fbadge"></span>' +
-      '<span class="spacer"></span>' +
-      '<button class="btn primary" id="nextBtn">' + (idx === total - 1 ? "完成 ✓" : "下一题 →") + '</button>' +
-      '</div>';
-
-    h += '</div>';
-    view.innerHTML = h;
-
-    /* ---- 事件 ---- */
-    $("backHome").onclick = function () { renderHome(); };
-    $("prevBtn").onclick = function () { if (S.qi > 0) go(S.qi - 1); };
-    $("nextBtn").onclick = function () {
-      if (S.qi >= S.queue.length - 1) { finish(); return; }
-      go(S.qi + 1);
-    };
-    $("favBtn").onclick = function () {
-      var on = Store.toggleFav(qid);
-      this.className = "fav-btn" + (on ? " on" : "");
-      this.textContent = on ? "★ 已收藏" : "☆ 收藏";
-      refreshBadges();
-    };
-    $("revealBtn").onclick = function () { S.revealed = true; paintResult(); };
-    if ($("sheetBtn")) $("sheetBtn").onclick = openSheet;
-    if ($("scoreBtn")) $("scoreBtn").onclick = showScore;
-    if ($("passageHead")) $("passageHead").onclick = function () {
-      var box = $("passageBox");
-      box.classList.toggle("collapsed");
-      $("passageToggle").textContent = box.classList.contains("collapsed") ? "点击展开 ▼" : "点击折叠 ▲";
-    };
-
-    var bank = $("bank");
-    if (bank) {
-      bank.onclick = function (e) {
-        var b = e.target.closest("button[data-k]");
-        if (!b || b.disabled) return;
-        if (Store.getAnswer(qid)) return;
-        pick(b.dataset.k);
-      };
-    }
-    var opts = $("opts");
-    if (opts) {
-      opts.onclick = function (e) {
-        var b = e.target.closest(".opt");
-        if (!b || b.disabled) return;
-        if (Store.getAnswer(qid)) return;
-        pick(b.dataset.k);
-      };
-    }
-
-    if (rec) { S.revealed = true; }
-    if (window.Ink) Ink.sync();
-    paintResult();
-    updateFootBadge();
+    h += '<div class="qresult" id="res-' + q.no + '"></div></div>';
+    return h;
   }
 
-  function pick(k) {
-    var q = S.cur, pid = S.curPid, qid = qidOf(pid, q.no);
+  function onQListClick(e) {
+    var b = e.target.closest("button[data-k]");
+    if (!b) return;
+    var no = parseInt(b.dataset.no, 10);
+    var qid = qidOf(S.pid, no);
+    if (Store.getAnswer(qid) && S.submitted) return;
+    if (Store.getAnswer(qid) && !S.submitted) {
+      // 考试模式下允许改答案
+    }
+    pickAnswer(no, b.dataset.k);
+  }
+
+  function pickAnswer(no, k) {
+    var p = paperOf(S.pid);
+    var q = null;
+    for (var i = 0; i < p.questions.length; i++) if (p.questions[i].no === no) q = p.questions[i];
+    if (!q) return;
     var ok = (k === q.answer);
-    Store.answer(qid, k, ok);
-    S.revealed = true;
-    paintResult();
+    Store.answer(qidOf(S.pid, no), k, ok);
+    paintQuestion(no);
+    updateExamProgress();
     refreshBadges();
-    updateFootBadge();
-    if (ok) toast("答对了 ✓");
-    else toast("答错了，看看解析 →");
+    if (S.submitted) { toast(ok ? "答对了 ✓" : "答错了"); }
   }
 
-  function paintResult() {
-    var q = S.cur, pid = S.curPid, qid = qidOf(pid, q.no);
+  function paintQuestion(no) {
+    var p = paperOf(S.pid);
+    var q = null;
+    for (var i = 0; i < p.questions.length; i++) if (p.questions[i].no === no) q = p.questions[i];
+    if (!q) return;
+    var qid = qidOf(S.pid, no);
     var rec = Store.getAnswer(qid);
-    var box = $("result");
-    if (!box) return;
-
-    /* 选项着色 */
-    var nodes = document.querySelectorAll("#opts .opt, #bank button");
-    for (var i = 0; i < nodes.length; i++) {
-      var n = nodes[i], k = n.dataset.k;
+    var nodes = document.querySelectorAll('#q-' + no + ' button[data-k]');
+    nodes.forEach(function (n) {
       n.classList.remove("right", "wrong", "picked");
-      if (!S.revealed) continue;
-      n.disabled = true;
-      if (k === q.answer) n.classList.add("right");
-      else if (rec && rec.c === k) n.classList.add("wrong");
+      var k = n.dataset.k;
+      if (S.submitted || S.revealed) {
+        n.disabled = true;
+        if (k === q.answer) n.classList.add("right");
+        else if (rec && rec.c === k) n.classList.add("wrong");
+      } else if (rec && rec.c === k) {
+        n.classList.add("picked");
+      }
+    });
+    var box = $("res-" + no);
+    if (!box) return;
+    if (!S.submitted && !S.revealed) { box.innerHTML = ""; return; }
+    box.innerHTML = resultHTML(q, rec);
+    var item = $("q-" + no);
+    if (item) {
+      item.classList.remove("right", "wrong");
+      if (S.submitted && rec) item.classList.add(rec.ok ? "right" : "wrong");
     }
+  }
 
-    if (!S.revealed) { box.innerHTML = ""; return; }
-
-    var html = "";
+  function resultHTML(q, rec) {
+    var h = "";
     if (rec) {
-      html += '<div class="verdict ' + (rec.ok ? "ok" : "bad") + '">' +
-        (rec.ok ? "✓ 回答正确" : "✕ 回答错误") +
+      h += '<div class="verdict ' + (rec.ok ? "ok" : "bad") + '">' + (rec.ok ? "✓ 回答正确" : "✕ 回答错误") +
         '<span class="vv">你的答案：' + esc(rec.c) + '　正确答案：' + esc(q.answer) +
         (q.answerText && q.answerText !== q.answer ? "（" + esc(q.answerText) + "）" : "") + '</span></div>';
     } else {
-      html += '<div class="verdict" style="background:#fff8fb;color:#c0245f;border:1px solid #f7d3e2">' +
+      h += '<div class="verdict" style="background:#fff8fb;color:#c0245f;border:1px solid #f7d3e2">' +
         '正确答案：' + esc(q.answer) +
         (q.answerText && q.answerText !== q.answer ? "（" + esc(q.answerText) + "）" : "") +
-        '<span class="vv">本题尚未作答</span></div>';
+        '<span class="vv">本题未作答</span></div>';
     }
-
     var ex = q.explain || {};
     var keys = EXPLAIN_ORDER.filter(function (k) { return ex[k]; });
     if (!keys.length) keys = Object.keys(ex).filter(function (k) { return ex[k]; });
     if (keys.length) {
-      html += '<div class="explain"><h4>逐题解析</h4>';
+      h += '<div class="explain"><h4>逐题解析</h4>';
       keys.forEach(function (k) {
-        var body = esc(ex[k]);
-        body = body.replace(/([A-Za-z][A-Za-z\s,'\-]{6,}?)\s*↔/g, "<em>$1</em> ↔");
-        html += '<div class="ex-block"><div class="ex-h">' + (EXPLAIN_LABEL[k] || k) + '</div>' +
+        var body = esc(ex[k]).replace(/([A-Za-z][A-Za-z\s,'\-]{6,}?)\s*↔/g, "<em>$1</em> ↔");
+        h += '<div class="ex-block"><div class="ex-h">' + (EXPLAIN_LABEL[k] || k) + '</div>' +
           '<div class="ex-b">' + body + '</div></div>';
       });
-      html += '</div>';
+      h += '</div>';
     }
-    box.innerHTML = html;
-    var rb = $("revealBtn");
-    if (rb) rb.textContent = "已显示解析";
+    return h;
   }
 
-  function updateFootBadge() {
+  /* ---------------- 左栏原文 ---------------- */
+  function showSection(key) {
+    var p = paperOf(S.pid);
+    var secs = examSections(p, S.queue.map(function (x) { return x.no; }));
+    var sec = null;
+    secs.forEach(function (s) { if (s.key === key) sec = s; });
+    if (!sec || !$("passageBody")) return;
+    S.secKey = key;
+    $("passageTitle").textContent = sec.title;
+    $("passageBody").innerHTML = passageHTML(sec.passage, sec.key);
+  }
+  function passageHTML(t, key) {
+    if (!t) return '<p style="color:#b6a7ae">本部分没有原文（听力录音内容见解析）</p>';
+    if (key === "cloze") {
+      return "<p>" + esc(t).replace(/\((\d{2})\)_{3,}\s*/g, '<span class="blank">($1) ______</span> ') + "</p>";
+    }
+    if (key === "matching") {
+      return t.split(/\n(?=[A-M]\)\s)/).map(function (x) {
+        return "<p>" + esc(x.trim()).replace(/^([A-M])\)/, "<b>$1)</b>") + "</p>";
+      }).join("");
+    }
+    return t.split(/\n{2,}/).map(function (x) {
+      return "<p>" + esc(x.trim()).replace(/^(P\d+)\s/, "<b>$1</b> ") + "</p>";
+    }).join("");
+  }
+
+  function updateExamProgress() {
+    var done = 0;
+    S.queue.forEach(function (x) { if (Store.getAnswer(qidOf(x.pid, x.no))) done++; });
+    var el = $("examProgress");
+    if (el) el.innerHTML = '已答 <b>' + done + '</b> / ' + S.queue.length + ' 题';
+    var bar = $("examBar");
+    if (bar) bar.style.width = Math.round(done / S.queue.length * 100) + "%";
+  }
+
+  /* ---------------- 计时 ---------------- */
+  var timerId = null;
+  function startTimer() {
+    if (timerId) clearInterval(timerId);
+    var t0 = S.startAt;
+    function tick() {
+      var el = $("examTimer");
+      if (!el) { clearInterval(timerId); timerId = null; return; }
+      var s = Math.floor((Date.now() - t0) / 1000);
+      el.textContent = ("0" + Math.floor(s / 60)).slice(-2) + ":" + ("0" + (s % 60)).slice(-2);
+    }
+    tick();
+    timerId = setInterval(tick, 1000);
+  }
+
+  /* ---------------- 提交判分 ---------------- */
+  function submitExam() {
+    var unanswered = 0;
+    S.queue.forEach(function (x) { if (!Store.getAnswer(qidOf(x.pid, x.no))) unanswered++; });
+    if (unanswered && !confirm("还有 " + unanswered + " 题未作答，确定提交吗？")) return;
+    S.submitted = true;
+    if (timerId) { clearInterval(timerId); timerId = null; }
+
+    var p = paperOf(S.pid), right = 0, wrong = 0, blank = 0;
+    var byPart = {};
+    p.questions.forEach(function (q) {
+      if (!S.queue.some(function (x) { return x.no === q.no; })) return;
+      var rec = Store.getAnswer(qidOf(S.pid, q.no));
+      var key = q.part;
+      byPart[key] = byPart[key] || { r: 0, w: 0, b: 0, n: 0 };
+      byPart[key].n++;
+      if (!rec) { blank++; byPart[key].b++; }
+      else if (rec.ok) { right++; byPart[key].r++; }
+      else { wrong++; byPart[key].w++; }
+    });
+
+    // 重绘题目（带对错与解析）
+    var secs = examSections(p, S.queue.map(function (x) { return x.no; }));
+    renderQList(secs);
+    S.queue.forEach(function (x) { paintQuestion(x.no); });   // 每题重新着色并展开解析
+
+    var total = S.queue.length;
+    var rate = Math.round(right / total * 100);
+    var objScore = Math.round(right / total * 497.5);
+    var h = '<div class="score" id="scoreBoxInner">';
+    h += '<h3>📊 成绩报告 · ' + esc(meta(S.pid).label + " " + meta(S.pid).set) + '</h3>';
+    h += '<div class="score-grid">' +
+      sg(right, "答对", "ok") + sg(wrong, "答错", "bad") + sg(blank, "未作答", "") +
+      sg(rate + "%", "正确率", "") + sg(objScore + " 分", "客观题折算（满分 497.5）", "") +
+      '</div>';
+    h += '<div class="score-bar"><i class="r" style="width:' + (right / total * 100) + '%"></i>' +
+      '<i class="w" style="width:' + (wrong / total * 100) + '%"></i>' +
+      '<i class="n2" style="width:' + (blank / total * 100) + '%"></i></div>';
+    h += '<div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">';
+    Object.keys(byPart).forEach(function (k) {
+      var v = byPart[k];
+      h += '<span class="tag">' + PART_LABEL[k] + '：对 ' + v.r + ' / 错 ' + v.w + ' / 未答 ' + v.b + '</span>';
+    });
+    h += '</div>';
+    h += '<div class="subj-note">答错的题已自动进入「错题本」，可以在顶部导航里随时重做。' +
+      '每题下方已展开正确答案与逐题解析。</div>';
+    h += '</div>';
+    $("scoreBox").innerHTML = h;
+    $("submitBtn").disabled = true;
+    $("submitBtn").textContent = "已提交";
+    $("scoreBoxInner").scrollIntoView({ behavior: "smooth", block: "start" });
+    refreshBadges();
+    toast("已提交：答对 " + right + " / " + total);
+  }
+  function sg(n, l, cls) {
+    return '<div class="sg"><div class="n ' + (cls || "") + '">' + n + '</div><div class="l">' + l + '</div></div>';
+  }
+
+  /* ================================================================
+     主观题页（写作 + 翻译，按试卷形式排列）
+     ================================================================ */
+  function renderSubjective() {
+    var p = paperOf(S.pid), m = meta(S.pid), sub = p.subjective || {};
+    var w = sub.writing, t = sub.translation;
+    S.view = "subjective"; setNav(null);
+    var shown = Store.getSubjShown(S.pid);
+
+    var h = '<div class="exam">';
+    h += '<div class="exam-head"><button class="back" id="backHome">←</button>' +
+      '<div class="etitle">' + esc(m.label) + " " + esc(m.set) + '<small>主观题部分 · 写作 + 翻译</small></div>' +
+      '<div class="egrow"></div><div class="eact">' +
+      '<button class="btn sm primary" id="subjShow">' + (shown ? "已显示参考答案" : "提交并查看参考答案") + '</button>' +
+      '</div></div>';
+
+    /* Part I 写作 */
+    if (w) {
+      h += '<section class="subj"><div class="shead"><span class="sbadge">Part I</span>' +
+        '<h3>Writing 写作</h3><span class="smeta">30 minutes · 150–200 words</span></div>';
+      h += '<div class="directions">' + esc(w.directions) + '</div>';
+      h += '<textarea id="writeBox" placeholder="在此作答（不会自动评分，可对照下方参考范文）">' +
+        esc(Store.getSubjText(S.pid, "writing")) + '</textarea>';
+      h += '<div class="wc"><span id="wcWrite"></span><span>建议 150–200 词</span></div>';
+      h += '<div id="refWrite"></div></section>';
+    }
+    /* Part IV 翻译 */
+    if (t) {
+      h += '<section class="subj"><div class="shead"><span class="sbadge">Part IV</span>' +
+        '<h3>Translation 汉译英</h3><span class="smeta">30 minutes · 段落翻译</span></div>';
+      h += '<div class="directions">' + esc(t.directions) + '</div>';
+      h += '<p class="src-cn">' + esc(t.source) + '</p>';
+      h += '<textarea id="transBox" placeholder="在此作答（把上面这段中文译成英文）">' +
+        esc(Store.getSubjText(S.pid, "translation")) + '</textarea>';
+      h += '<div class="wc"><span id="wcTrans"></span><span>整段连排，无题号</span></div>';
+      h += '<div id="refTrans"></div></section>';
+    }
+    h += '</div>';
+    view.innerHTML = h;
+
+    $("backHome").onclick = function () { renderHome(); };
+    if ($("writeBox")) {
+      countWords();
+      $("writeBox").addEventListener("input", function () {
+        Store.setSubjText(S.pid, "writing", this.value); countWords();
+      });
+    }
+    if ($("transBox")) {
+      countWords();
+      $("transBox").addEventListener("input", function () {
+        Store.setSubjText(S.pid, "translation", this.value); countWords();
+      });
+    }
+    if (shown) showRefs();
+    $("subjShow").onclick = function () {
+      Store.setSubjShown(S.pid);
+      showRefs();
+      this.textContent = "已显示参考答案";
+      toast("参考答案已展开");
+    };
+  }
+
+  function countWords() {
+    var wb = $("writeBox");
+    if (wb) {
+      var n = wb.value.trim() ? wb.value.trim().split(/\s+/).length : 0;
+      $("wcWrite").textContent = "已写 " + n + " 词";
+    }
+    var tb = $("transBox");
+    if (tb) {
+      var m = tb.value.trim() ? tb.value.trim().split(/\s+/).length : 0;
+      $("wcTrans").textContent = "已写 " + m + " 词";
+    }
+  }
+
+  function showRefs() {
+    var p = paperOf(S.pid), sub = p.subjective || {}, w = sub.writing, t = sub.translation;
+    if (w && $("refWrite") && !$("refWrite").innerHTML) {
+      var h = '<div class="ref"><h4>参考范文（' +
+        (w.model ? w.model.trim().split(/\s+/).length : 0) + ' 词）</h4>';
+      h += '<div class="model">' + esc(w.model) + '</div>';
+      if (w.modelZh) h += '<h4>整篇中译</h4><div class="model-zh">' + esc(w.modelZh) + '</div>';
+      if (w.outline && w.outline.length) {
+        h += '<h4>逐段拆解</h4>';
+        w.outline.forEach(function (o) {
+          h += '<div class="sent"><div class="sn">第 ' + o.no + ' 段</div><div class="row">' + esc(o.text) + '</div></div>';
+        });
+      }
+      h += '</div>';
+      $("refWrite").innerHTML = h;
+    }
+    if (t && $("refTrans") && !$("refTrans").innerHTML) {
+      var h2 = '<div class="ref"><h4>参考译文</h4>';
+      h2 += '<div class="model">' + esc(t.reference) + '</div>';
+      if (t.sentences && t.sentences.length) {
+        h2 += '<h4>逐句解析（' + t.sentences.length + ' 句）</h4>';
+        t.sentences.forEach(function (s, i) {
+          h2 += '<div class="sent"><div class="sn">第 ' + (i + 1) + ' 句</div>';
+          if (s.trunk) h2 += '<div class="row"><b>主干：</b>' + esc(s.trunk) + '</div>';
+          if (s.downgrade) h2 += '<div class="row"><b>降级：</b>' + esc(s.downgrade) + '</div>';
+          if (s.grammar) h2 += '<div class="row"><b>语法：</b>' + esc(s.grammar) + '</div>';
+          if (s.target) h2 += '<div class="row"><b>译文：</b>' + esc(s.target) + '</div>';
+          h2 += '</div>';
+        });
+      }
+      h2 += '</div>';
+      $("refTrans").innerHTML = h2;
+    }
+  }
+
+  /* ================================================================
+     刷题页（单栏，一次一题）
+     ================================================================ */
+  function buildQueue(mode, arg) {
+    var q = [], i, j;
+    if (mode === "sequence") {
+      INDEX.forEach(function (p) { p.nos.forEach(function (n) { q.push({ pid: p.id, no: n }); }); });
+    } else if (mode === "random") {
+      INDEX.forEach(function (p) { p.nos.forEach(function (n) { q.push({ pid: p.id, no: n }); }); });
+      for (i = q.length - 1; i > 0; i--) { j = Math.floor(Math.random() * (i + 1)); var t = q[i]; q[i] = q[j]; q[j] = t; }
+      q = q.slice(0, 100);
+    } else if (mode === "wrong" || mode === "fav") {
+      var list = mode === "wrong" ? Store.wrongList() : Store.favList();
+      list.sort();
+      list.forEach(function (k) { var a = k.split("#"); q.push({ pid: a[0], no: parseInt(a[1], 10) }); });
+    }
+    return q;
+  }
+
+  function startPractice(mode, arg, at) {
+    var q = buildQueue(mode, arg);
+    if (!q.length) { toast(mode === "wrong" ? "错题本是空的，先去刷几题吧" : "收藏夹是空的"); return; }
+    S.practice = { mode: mode, arg: arg };
+    S.queue = q;
+    S.submitted = false; S.revealed = false;
+    setNav(mode === "wrong" ? "wrong" : mode === "fav" ? "fav" : "practice");
+    goTo(at || 0);
+  }
+
+  function goTo(i) {
+    if (i < 0) i = 0;
+    if (i > S.queue.length - 1) i = S.queue.length - 1;
+    S.qi = i; S.revealed = false; S.submitted = false;
+    var it = S.queue[i];
+    S.curPid = it.pid;
+    view.innerHTML = '<div class="loading">正在载入…</div>';
+    loadPaper(it.pid).then(function (p) {
+      var q = null;
+      for (var k = 0; k < p.questions.length; k++) if (p.questions[k].no === it.no) q = p.questions[k];
+      if (!q) { toast("题目缺失"); return; }
+      S.cur = q;
+      renderPractice();
+    });
+  }
+
+  function renderPractice() {
+    var q = S.cur, pid = S.curPid, m = meta(pid);
+    var idx = S.qi, total = S.queue.length;
+    var qid = qidOf(pid, q.no);
+    var rec = Store.getAnswer(qid);
+    var p = paperOf(pid);
+    var pass = q.passage || (p.passages && q.pref && p.passages[q.pref]) || "";
+    var modeName = { sequence: "顺序刷题", random: "随机练习", wrong: "错题本", fav: "我的收藏" }[S.practice.mode];
+    S.view = "practice";
+
+    var h = '<div class="practice">';
+    h += '<div class="p-head"><button class="back" id="backHome">←</button>' +
+      '<div class="ptitle">' + esc(m.label) + " " + esc(m.set) + '<small>第 ' + q.no + ' 题 · ' + PART_LABEL[q.part] + '</small></div>' +
+      '<div class="pgrow"><div class="pinfo"><span>' + modeName + '</span><span><b>' + (idx + 1) + '</b> / ' + total +
+      '　正确率 ' + Store.stats().rate + '%</span></div>' +
+      '<div class="pbar2"><i style="width:' + Math.round((idx + 1) / total * 100) + '%"></i></div></div>' +
+      '<div class="eact"><button class="btn sm ghost" id="sheetBtn">答题卡</button></div></div>';
+
+    h += '<section class="qcard">';
+    h += '<div class="qmeta"><div class="qno">' + q.no + '</div>' +
+      '<div class="qfrom">' + esc(m.label) + " " + esc(m.set) + " · " + PART_LABEL[q.part] +
+      (q.type ? " · " + esc(q.type) : "") + '</div><div class="spacer"></div>' +
+      '<button class="fav-btn' + (Store.isFav(qid) ? " on" : "") + '" id="favBtn">' +
+      (Store.isFav(qid) ? "★ 已收藏" : "☆ 收藏") + '</button></div>';
+
+    if (pass) {
+      h += '<div class="passage-inline" id="pInline"><div class="pi-head" id="piHead">' +
+        (q.part === "reading" ? "阅读原文" : q.part === "matching" ? "原文段落 A–M" : "选词填空原文") +
+        '<span id="piToggle">点击展开 ▼</span></div><div class="pi-body">' +
+        passageHTML(pass, q.part === "cloze" ? "cloze" : q.part === "matching" ? "matching" : "reading") +
+        '</div></div>';
+    }
+    if (q.stem) h += '<p class="qstem">' + esc(q.stem) + '</p>';
+    if (q.stemZh) h += '<p class="qstem-zh">' + esc(q.stemZh) + '</p>';
+
+    if (q.part === "cloze" && q.wordBank) {
+      h += '<div class="bank" data-bank="' + q.no + '">' +
+        Object.keys(q.wordBank).map(function (k) {
+          return '<button data-k="' + k + '" data-no="' + q.no + '"><span class="bk">' + k + '</span>' + esc(q.wordBank[k]) + '</button>';
+        }).join("") + '</div>';
+    } else if (q.part === "matching") {
+      var ps = q.paraOptions || "ABCDEFGHIJKLM".split("");
+      h += '<div class="para-pick" data-bank="' + q.no + '">' +
+        ps.map(function (L) { return '<button data-k="' + L + '" data-no="' + q.no + '">' + L + '</button>'; }).join("") + '</div>';
+    } else if (q.options && q.options.length === 4) {
+      h += '<div class="opts" data-opts="' + q.no + '">' +
+        "ABCD".split("").map(function (L, i) {
+          return '<button class="opt" data-k="' + L + '" data-no="' + q.no + '"><span class="k">' + L +
+            '</span><span class="t">' + esc(q.options[i]) + '</span></button>';
+        }).join("") + '</div>';
+    }
+    h += '<div class="qresult" id="res-' + q.no + '"></div></section>';
+
+    h += '<div class="p-foot">' +
+      '<button class="btn" id="prevBtn"' + (idx === 0 ? " disabled" : "") + '>← 上一题</button>' +
+      '<button class="fav-inline' + (Store.isFav(qid) ? " on" : "") + '" id="favBtn2">' + (Store.isFav(qid) ? "★" : "☆") + '</button>' +
+      '<span class="spacer"></span><span class="fbadge" id="fbadge"></span><span class="spacer"></span>' +
+      '<button class="btn primary" id="nextBtn">' + (idx === total - 1 ? "完成 ✓" : "下一题 →") + '</button>' +
+      '</div></div>';
+
+    view.innerHTML = h;
+
+    $("backHome").onclick = function () { renderHome(); };
+    $("prevBtn").onclick = function () { if (S.qi > 0) goTo(S.qi - 1); };
+    $("nextBtn").onclick = function () {
+      if (S.qi >= S.queue.length - 1) { toast("已完成：" + total + " 题"); openSheet(); return; }
+      goTo(S.qi + 1);
+    };
+    $("sheetBtn").onclick = openSheet;
+    var favToggle = function () {
+      var on = Store.toggleFav(qid);
+      $("favBtn").className = "fav-btn" + (on ? " on" : "");
+      $("favBtn").textContent = on ? "★ 已收藏" : "☆ 收藏";
+      $("favBtn2").className = "fav-inline" + (on ? " on" : "");
+      $("favBtn2").textContent = on ? "★" : "☆";
+      refreshBadges();
+    };
+    $("favBtn").onclick = favToggle;
+    $("favBtn2").onclick = favToggle;
+    if ($("piHead")) $("piHead").onclick = function () {
+      var b = $("pInline"); b.classList.toggle("collapsed");
+      $("piToggle").textContent = b.classList.contains("collapsed") ? "点击展开 ▼" : "点击折叠 ▲";
+    };
+    var box = document.querySelector(".qcard");
+    box.addEventListener("click", function (e) {
+      var b = e.target.closest("button[data-k]");
+      if (!b) return;
+      var no = parseInt(b.dataset.no, 10);
+      var qq = qidOf(pid, no);
+      if (Store.getAnswer(qq)) return;
+      var ok = (b.dataset.k === q.answer);
+      Store.answer(qq, b.dataset.k, ok);
+      paintPractice();
+      refreshBadges();
+      toast(ok ? "答对了 ✓" : "答错了，看解析 →");
+    });
+    if (rec) S.revealed = true;
+    paintPractice();
+    updateFoot();
+  }
+
+  function paintPractice() {
+    var q = S.cur, pid = S.curPid, no = q.no;
+    var rec = Store.getAnswer(qidOf(pid, no));
+    document.querySelectorAll('.qcard button[data-k]').forEach(function (n) {
+      n.classList.remove("right", "wrong", "picked");
+      var k = n.dataset.k;
+      if (S.revealed) {
+        n.disabled = true;
+        if (k === q.answer) n.classList.add("right");
+        else if (rec && rec.c === k) n.classList.add("wrong");
+      } else if (rec && rec.c === k) n.classList.add("picked");
+    });
+    var box = $("res-" + no);
+    if (box) box.innerHTML = S.revealed ? resultHTML(q, rec) : "";
+  }
+
+  function updateFoot() {
     var el = $("fbadge");
     if (!el) return;
     var rec = Store.getAnswer(qidOf(S.curPid, S.cur.no));
@@ -511,106 +920,66 @@
       "　|　累计 " + st.done + " 题，正确率 " + st.rate + "%";
   }
 
-  function finish() {
-    var st = Store.stats();
-    toast("已到最后：累计 " + st.done + " 题，正确率 " + st.rate + "%");
-    openSheet();
-  }
-
-  function showScore() {
-    var meta = null;
-    for (var i = 0; i < INDEX.length; i++) if (INDEX[i].id === S.curPid) meta = INDEX[i];
-    var pr = Store.paperProgress(meta.id, meta.nos);
-    var n = meta.nos.length;
-    /* 六级计分：听力 248.5 / 阅读 248.5 / 写作翻译 212.5，这里按客观题折算 */
-    var obj = meta.nos.filter(function (x) { return x <= 55; }).length;
-    var rate = pr.done ? pr.right / pr.done : 0;
-    var est = Math.round(rate * 480);
-    alert("《" + meta.label + " " + meta.set + "》\n\n" +
-      "已作答：" + pr.done + " / " + n + " 题\n" +
-      "答对：" + pr.right + " 题\n" +
-      "正确率：" + Math.round(rate * 100) + "%\n\n" +
-      "客观题（听力+阅读）满分 497.5，按当前正确率折算约 " + est + " 分。");
-  }
-
-  /* ---------------- 答题卡 ---------------- */
+  /* ================================================================
+     答题卡
+     ================================================================ */
   function openSheet() {
-    var body = $("sheetBody");
-    var meta = null;
-    for (var i = 0; i < INDEX.length; i++) if (INDEX[i].id === S.curPid) meta = INDEX[i];
-
-    var groups = [
-      { name: "听力理解", lo: 1, hi: 25 },
-      { name: "选词填空", lo: 26, hi: 35 },
-      { name: "信息匹配", lo: 36, hi: 45 },
-      { name: "仔细阅读", lo: 46, hi: 55 }
-    ];
+    var isPractice = S.view === "practice";
+    var groups = {};
+    S.queue.forEach(function (x) {
+      var part = partOf(x.no);
+      groups[part] = groups[part] || [];
+      groups[part].push(x.no);
+    });
     var h = "";
-    groups.forEach(function (g) {
-      var nos = meta.nos.filter(function (x) { return x >= g.lo && x <= g.hi; });
-      if (!nos.length) return;
+    ["listening", "cloze", "matching", "reading"].forEach(function (part) {
+      if (!groups[part]) return;
+      var nos = groups[part];
       var done = 0, right = 0;
-      nos.forEach(function (x) {
-        var a = Store.getAnswer(qidOf(meta.id, x));
+      nos.forEach(function (n) {
+        var a = Store.getAnswer(qidOf(S.pid || S.curPid, n));
         if (a) { done++; if (a.ok) right++; }
       });
-      h += '<div class="sheet-group"><div class="sg-h"><span>' + g.name + '</span>' +
+      h += '<div class="sheet-group"><div class="sg-h"><span>' + PART_LABEL[part] + '</span>' +
         '<span>' + done + "/" + nos.length + " · 对 " + right + '</span></div><div class="sheet-grid">';
-      nos.forEach(function (x) {
-        var a = Store.getAnswer(qidOf(meta.id, x));
+      nos.forEach(function (n) {
+        var a = Store.getAnswer(qidOf(S.pid || S.curPid, n));
         var cls = a ? (a.ok ? "ok" : "bad") : "";
-        if (x === S.cur.no) cls += " cur";
-        h += '<button class="' + cls + '" data-jump="' + x + '">' + x + "</button>";
+        if (isPractice && S.cur && n === S.cur.no) cls += " cur";
+        h += '<button class="' + cls + '" data-jump="' + n + '">' + n + "</button>";
       });
       h += "</div></div>";
     });
-
-    h += '<div class="sheet-group"><div class="sg-h"><span>跳转到套卷</span><span>共 ' + INDEX.length + ' 套</span></div>' +
-      '<div class="papers" style="grid-template-columns:repeat(auto-fill,minmax(140px,1fr))">';
-    INDEX.forEach(function (p) {
-      var pr = Store.paperProgress(p.id, p.nos);
-      h += '<div class="paper" data-jumppaper="' + p.id + '" style="padding:10px 11px">' +
-        '<div class="pt"><b style="font-size:13px">' + esc(p.label) + '</b><span>' + esc(p.set) + '</span></div>' +
-        '<div class="pm" style="margin-top:4px">' + pr.done + "/" + pr.total + '</div></div>';
-    });
-    h += "</div></div>";
-    body.innerHTML = h;
-
+    $("sheetBody").innerHTML = h || '<p style="color:#8b7a83">当前没有题目</p>';
     $("sheetFoot").innerHTML = '<button class="btn" id="sheetClose2">关闭</button>' +
-      '<button class="btn ghost" id="sheetWrong">只看错题</button>' +
-      '<button class="btn primary" id="sheetTop">回到顶部</button>';
-
-    body.onclick = function (e) {
+      (Store.wrongCount() ? '<button class="btn ghost" id="sheetWrong">去做错题（' + Store.wrongCount() + '）</button>' : '');
+    $("sheetBody").onclick = function (e) {
       var b = e.target.closest("button[data-jump]");
-      if (b) { closeSheet(); jumpTo(meta.id, parseInt(b.dataset.jump, 10)); return; }
-      var p = e.target.closest("[data-jumppaper]");
-      if (p) { closeSheet(); start("papers", p.dataset.jumppaper, 0); }
+      if (!b) return;
+      var no = parseInt(b.dataset.jump, 10);
+      closeSheet();
+      if (isPractice) {
+        for (var i = 0; i < S.queue.length; i++) if (S.queue[i].no === no && S.queue[i].pid === S.curPid) { goTo(i); return; }
+      } else {
+        var el = $("q-" + no);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+        showSection(sectionOf(examSections(paperOf(S.pid), S.queue.map(function (x) { return x.no; })), no));
+      }
     };
     $("sheetClose2").onclick = closeSheet;
-    $("sheetTop").onclick = function () { body.scrollTop = 0; };
-    $("sheetWrong").onclick = function () {
-      if (!Store.wrongCount()) { toast("错题本是空的"); return; }
-      closeSheet(); start("wrong", null, 0);
-    };
-
-    $("sheetMask").hidden = false;
-    $("sheet").hidden = false;
+    if ($("sheetWrong")) $("sheetWrong").onclick = function () { closeSheet(); startPractice("wrong", null, 0); };
+    $("sheetMask").hidden = false; $("sheet").hidden = false;
   }
-
   function closeSheet() { $("sheetMask").hidden = true; $("sheet").hidden = true; }
 
-  function jumpTo(pid, no) {
-    /* 若当前队列里已有该题则直接跳，否则以套卷模式打开 */
-    for (var i = 0; i < S.queue.length; i++) {
-      if (S.queue[i].pid === pid && S.queue[i].no === no) { go(i); return; }
-    }
-    start("papers", pid, 0);
-    setTimeout(function () {
-      for (var j = 0; j < S.queue.length; j++) if (S.queue[j].no === no) { go(j); return; }
-    }, 60);
+  /* ================================================================
+     顶栏 / 导航
+     ================================================================ */
+  function setNav(key) {
+    document.querySelectorAll("#tabs button").forEach(function (b) {
+      b.classList.toggle("on", b.dataset.nav === key);
+    });
   }
-
-  /* ---------------- 顶栏 ---------------- */
   function refreshBadges() {
     var st = Store.stats();
     $("wrongBadge").textContent = Store.wrongCount();
@@ -621,16 +990,17 @@
       '<div class="ts"><span class="n">' + Store.wrongCount() + '</span><span class="l">错题</span></div>';
   }
 
-  function bindTabs() {
-    var tabs = document.querySelectorAll("#tabs button");
-    for (var i = 0; i < tabs.length; i++) {
-      tabs[i].onclick = function () {
-        var m = this.dataset.mode;
-        if (m === "types") { renderHome(); jumpToTypes(); return; }
-        start(m, null, 0);
+  function bindNav() {
+    document.querySelectorAll("#tabs button").forEach(function (b) {
+      b.onclick = function () {
+        var n = this.dataset.nav;
+        if (n === "home") renderHome();
+        else if (n === "practice") startPractice("sequence", null, 0);
+        else startPractice(n, null, 0);
       };
-    }
-    $("brandHome").onclick = renderHome;
+    });
+    $("brandHome").onclick = function () { renderHome(); };
+    $("logoutBtn").onclick = logout;
     $("sheetMask").onclick = closeSheet;
     $("sheetClose").onclick = closeSheet;
   }
@@ -638,28 +1008,22 @@
   /* ---------------- 快捷键 ---------------- */
   document.addEventListener("keydown", function (e) {
     if (window.Ink && Ink.isOn()) return;
-    if (S.mode === "home" || !S.cur) return;
-    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
-    var k = e.key;
-    if (k === "ArrowRight") { if (S.qi < S.queue.length - 1) go(S.qi + 1); }
-    else if (k === "ArrowLeft") { if (S.qi > 0) go(S.qi - 1); }
-    else if (k === " ") { e.preventDefault(); S.revealed = true; paintResult(); }
-    else if (/^[a-dA-D]$/.test(k)) {
-      var L = k.toUpperCase();
-      if (document.querySelector('#opts .opt[data-k="' + L + '"]')) {
-        if (!Store.getAnswer(qidOf(S.curPid, S.cur.no))) pick(L);
-      }
-    } else if (/^[e-oE-O]$/.test(k)) {
-      var L2 = k.toUpperCase();
-      if (document.querySelector('#bank button[data-k="' + L2 + '"]')) {
-        if (!Store.getAnswer(qidOf(S.curPid, S.cur.no))) pick(L2);
-      }
+    if ($("app").hidden) return;
+    if (S.view !== "practice" || !S.cur) return;
+    var t = e.target.tagName;
+    if (t === "INPUT" || t === "TEXTAREA") return;
+    if (e.key === "ArrowRight") { if (S.qi < S.queue.length - 1) goTo(S.qi + 1); }
+    else if (e.key === "ArrowLeft") { if (S.qi > 0) goTo(S.qi - 1); }
+    else if (/^[a-oA-O]$/.test(e.key)) {
+      var L = e.key.toUpperCase();
+      var btn = document.querySelector('.qcard button[data-k="' + L + '"]');
+      if (btn && !Store.getAnswer(qidOf(S.curPid, S.cur.no))) btn.click();
     }
   });
 
   /* ---------------- 启动 ---------------- */
-  refreshBadges();
-  bindTabs();
-  renderHome();
-  window.App = { start: start, go: go, renderHome: renderHome, S: S };
+  bindNav();
+  initLogin();
+  if (window.Ink) Ink.sync();
+  window.App = { S: S, renderHome: renderHome, openPaper: openPaper, startPractice: startPractice };
 })();
