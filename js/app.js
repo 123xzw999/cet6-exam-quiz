@@ -1088,7 +1088,7 @@
 
   /* ---------------- 快捷键 ---------------- */
   document.addEventListener("keydown", function (e) {
-    if (window.Ink && Ink.isOn()) return;
+    if (window.Ink && typeof Ink.isOn === "function" && Ink.isOn()) return;
     if ($("app").hidden) return;
     if (S.view !== "practice" || !S.cur) return;
     var t = e.target.tagName;
@@ -1113,6 +1113,6 @@
   /* ---------------- 启动 ---------------- */
   bindNav();
   initLogin();
-  if (window.Ink) Ink.sync();
+  if (window.Ink && typeof Ink.sync === "function") Ink.sync();
   window.App = { S: S, renderHome: renderHome, openPaper: openPaper, startPractice: startPractice };
 })();
