@@ -1,5 +1,11 @@
 # 六级真题刷题 · CET-6 2020–2026
 
+[![在线刷题](https://img.shields.io/badge/在线访问-点此进入-2ea44f?style=for-the-badge)](https://123xzw999.github.io/cet6-exam-quiz/)
+
+> ### 🔗 在线刷题地址：**<https://123xzw999.github.io/cet6-exam-quiz/>**
+>
+> 打开即用，无需注册、无需安装。建议使用 Chrome / Edge / Safari 最新版。
+
 把《英语六级 CET6 2020-2026 真题题目册》和配套的《答案解析与词汇册》两本 PDF
 转成了一个科目一式的在线刷题网站。
 
