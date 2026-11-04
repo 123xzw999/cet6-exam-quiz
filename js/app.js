@@ -50,19 +50,51 @@
   }
   function qidOf(pid, no) { return pid + "#" + no; }
 
-  /* ---------------- 数据加载 ---------------- */
+  /* ---------------- 数据加载 ----------------
+     单套试卷 90–200KB，部分托管环境（如 CloudStudio 网关）不做 gzip，
+     直接下原始 JS 会很慢。所以优先取 data/papers/<pid>.js.gz 并在前端解压，
+     任何一步失败都退回原来的 <script> 方式，保证兼容。          */
+  function runPaperSource(text, pid) {
+    (new Function(text))();
+    var p = window.__CET6_PAPERS && window.__CET6_PAPERS[pid];
+    if (!p) throw new Error("数据为空");
+    return p;
+  }
+
+  function loadPaperLegacy(pid, resolve, reject) {
+    var s = document.createElement("script");
+    s.src = "data/papers/" + pid + ".js";
+    s.onload = function () {
+      PAPERS[pid] = window.__CET6_PAPERS[pid];
+      if (PAPERS[pid]) resolve(PAPERS[pid]); else reject(new Error("数据为空"));
+    };
+    s.onerror = function () { reject(new Error("无法加载 " + pid)); };
+    document.head.appendChild(s);
+  }
+
   function loadPaper(pid) {
     if (PAPERS[pid]) return Promise.resolve(PAPERS[pid]);
     if (loading[pid]) return loading[pid];
     loading[pid] = new Promise(function (resolve, reject) {
-      var s = document.createElement("script");
-      s.src = "data/papers/" + pid + ".js";
-      s.onload = function () {
-        PAPERS[pid] = window.__CET6_PAPERS[pid];
-        if (PAPERS[pid]) resolve(PAPERS[pid]); else reject(new Error("数据为空"));
-      };
-      s.onerror = function () { reject(new Error("无法加载 " + pid)); };
-      document.head.appendChild(s);
+      if (!window.fetch || !window.DecompressionStream || !window.Response) {
+        return loadPaperLegacy(pid, resolve, reject);
+      }
+      fetch("data/papers/" + pid + ".js.gz", { cache: "force-cache" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("gz " + r.status);
+          var enc = (r.headers.get("content-encoding") || "").toLowerCase();
+          // 网关若自己带了 gzip，浏览器已解压，直接取文本
+          if (enc.indexOf("gzip") >= 0) return r.text();
+          var stream = r.body.pipeThrough(new DecompressionStream("gzip"));
+          return new Response(stream).text();
+        })
+        .then(function (text) {
+          PAPERS[pid] = runPaperSource(text, pid);
+          resolve(PAPERS[pid]);
+        })
+        .catch(function () {
+          loadPaperLegacy(pid, resolve, reject);
+        });
     });
     return loading[pid];
   }
